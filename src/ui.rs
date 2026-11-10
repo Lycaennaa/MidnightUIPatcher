@@ -11,7 +11,7 @@ use gpui::{
 use crate::config::{self, UserConfig};
 use crate::deploy::{self, DeploymentPlan};
 use crate::text_input::{self, LineInput};
-use crate::patcher::{PATCHES, PatchSpec};
+use crate::patches::{PATCHES, PatchSpec};
 const DEPLOY_SUCCESS: &str = "Installed/updated; five mounts and backup manifest verified";
 
 pub fn run() {

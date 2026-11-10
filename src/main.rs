@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use midnight_ui_patcher::patcher::{PATCHES, TARGETS, patch_qml, selected_patch_ids};
+use midnight_ui_patcher::patcher::{patch_qml, selected_patch_ids};
+use midnight_ui_patcher::patches::{PATCHES, TARGETS};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

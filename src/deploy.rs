@@ -12,7 +12,8 @@ use tar::{Archive, Builder, Header};
 use thiserror::Error;
 
 use crate::config::{self, ConfigError, UserConfig, identity_path};
-use crate::patcher::{self, PATCHES, PatchError, TARGETS};
+use crate::patcher::{self, PatchError};
+use crate::patches::{PATCHES, TARGETS};
 
 const ASKPASS_SCRIPT: &str = include_str!("../support/ssh-askpass.sh");
 const TESTED_FIRMWARE_LABEL: Option<&str> = None;

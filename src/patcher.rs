@@ -3,161 +3,7 @@ use std::ops::Range;
 
 use thiserror::Error;
 
-pub const TARGETS: [&str; 5] = [
-    "usr/lib/qml/QuickSettings/Utils/Style.qml",
-    "usr/lib/qml/QuickSettings/Containers/QuickSettingsMainView.qml",
-    "usr/lib/qml/SystemUI/Notification/NotificationStyle.qml",
-    "usr/lib/qml/SystemUI/Notification/Toast.qml",
-    "usr/lib/qml/QuickSettings/Component/BaseControlPanelButton.qml",
-];
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PatchKind {
-    MainPanelColor,
-    MainPanelOpacity,
-    MainPanelVisibility,
-    MenuPopupColor,
-    ButtonDefaultColor,
-    ButtonIdleFill,
-    CandidateBackgroundColor,
-    CandidateBackgroundOpacity,
-    MainLayoutColor,
-    MainLayoutSecondaryColor,
-    RecentHistoryColor,
-    EditPopupColor,
-    MenuPopupAreaColor,
-    MenuPopupButtonColor,
-    SliderPopupColor,
-    ToastActivatedColor,
-    ToastBackgroundColor,
-    ToastLightOpacity,
-    ToastLinkColor,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct PatchSpec {
-    pub kind: PatchKind,
-    pub id: &'static str,
-    pub label: &'static str,
-    pub target: &'static str,
-}
-
-pub const PATCHES: [PatchSpec; 19] = [
-    PatchSpec {
-        kind: PatchKind::MainPanelColor,
-        id: "main-panel-color",
-        label: "Set panel backdrop color to black",
-        target: TARGETS[1],
-    },
-    PatchSpec {
-        kind: PatchKind::MainPanelOpacity,
-        id: "main-panel-opacity",
-        label: "Make panel backdrop fully opaque",
-        target: TARGETS[1],
-    },
-    PatchSpec {
-        kind: PatchKind::MainPanelVisibility,
-        id: "main-panel-visibility",
-        label: "Hide the full-panel backdrop",
-        target: TARGETS[1],
-    },
-    PatchSpec {
-        kind: PatchKind::MenuPopupColor,
-        id: "menu-popup-color",
-        label: "Set the menu popup background to black",
-        target: TARGETS[1],
-    },
-    PatchSpec {
-        kind: PatchKind::ButtonDefaultColor,
-        id: "button-default-color",
-        label: "Set the tile default fill to black",
-        target: TARGETS[4],
-    },
-    PatchSpec {
-        kind: PatchKind::ButtonIdleFill,
-        id: "button-idle-fill",
-        label: "Set idle tile fills to black",
-        target: TARGETS[4],
-    },
-    PatchSpec {
-        kind: PatchKind::CandidateBackgroundColor,
-        id: "candidate-background-color",
-        label: "Set candidate-list background to black",
-        target: TARGETS[0],
-    },
-    PatchSpec {
-        kind: PatchKind::CandidateBackgroundOpacity,
-        id: "candidate-background-opacity",
-        label: "Make candidate-list background opaque",
-        target: TARGETS[0],
-    },
-    PatchSpec {
-        kind: PatchKind::MainLayoutColor,
-        id: "main-layout-color",
-        label: "Make the main layout background transparent",
-        target: TARGETS[0],
-    },
-    PatchSpec {
-        kind: PatchKind::MainLayoutSecondaryColor,
-        id: "main-layout-secondary-color",
-        label: "Make the alternate main-layout background transparent",
-        target: TARGETS[0],
-    },
-    PatchSpec {
-        kind: PatchKind::RecentHistoryColor,
-        id: "recent-history-color",
-        label: "Set recent-history background to black",
-        target: TARGETS[0],
-    },
-    PatchSpec {
-        kind: PatchKind::EditPopupColor,
-        id: "edit-popup-color",
-        label: "Set edit-popup background to black",
-        target: TARGETS[0],
-    },
-    PatchSpec {
-        kind: PatchKind::MenuPopupAreaColor,
-        id: "menu-popup-area-color",
-        label: "Set the menu popup area to black",
-        target: TARGETS[0],
-    },
-    PatchSpec {
-        kind: PatchKind::MenuPopupButtonColor,
-        id: "menu-popup-button-color",
-        label: "Set menu popup buttons to black",
-        target: TARGETS[0],
-    },
-    PatchSpec {
-        kind: PatchKind::SliderPopupColor,
-        id: "slider-popup-color",
-        label: "Set slider popup background to black",
-        target: TARGETS[0],
-    },
-    PatchSpec {
-        kind: PatchKind::ToastActivatedColor,
-        id: "toast-activated-color",
-        label: "Set activated toast color to white",
-        target: TARGETS[2],
-    },
-    PatchSpec {
-        kind: PatchKind::ToastBackgroundColor,
-        id: "toast-background-color",
-        label: "Set toast background to black",
-        target: TARGETS[2],
-    },
-    PatchSpec {
-        kind: PatchKind::ToastLightOpacity,
-        id: "toast-light-opacity",
-        label: "Make light-toast background opaque",
-        target: TARGETS[2],
-    },
-    PatchSpec {
-        kind: PatchKind::ToastLinkColor,
-        id: "toast-link-color",
-        label: "Keep activated toast links white on black",
-        target: TARGETS[3],
-    },
-];
+use crate::patches::{PATCHES, PatchRule, PatchSpec, ScopeStep, TARGETS};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PatchError {
@@ -685,6 +531,25 @@ struct Edit {
     replacement: String,
 }
 
+fn collect_patch_edits(
+    docs: &BTreeMap<String, QmlDoc<'_>>,
+    patches: &[PatchSpec],
+    selected: &BTreeSet<String>,
+) -> Result<BTreeMap<String, Vec<Edit>>, PatchError> {
+    let mut edits: BTreeMap<String, Vec<Edit>> = BTreeMap::new();
+    for patch in patches {
+        let doc = &docs[patch.target];
+        let mut patch_edits = locate_patch(doc, patch.rule, patch.target)?;
+        if selected.contains(patch.id) {
+            edits
+                .entry(patch.target.to_owned())
+                .or_default()
+                .append(&mut patch_edits);
+        }
+    }
+    Ok(edits)
+}
+
 pub fn patch_qml(
     sources: &BTreeMap<String, String>,
     selected: &BTreeSet<String>,
@@ -705,17 +570,7 @@ pub fn patch_qml(
         docs.insert(path.to_owned(), QmlDoc::parse(source, path)?);
     }
 
-    let mut edits: BTreeMap<String, Vec<Edit>> = BTreeMap::new();
-    for patch in &PATCHES {
-        let doc = &docs[patch.target];
-        let mut patch_edits = locate_patch(doc, patch.kind, patch.target)?;
-        if selected.contains(patch.id) {
-            edits
-                .entry(patch.target.to_owned())
-                .or_default()
-                .append(&mut patch_edits);
-        }
-    }
+    let mut edits = collect_patch_edits(&docs, &PATCHES, selected)?;
 
     let mut output = BTreeMap::new();
     for (path, doc) in docs {
@@ -758,45 +613,57 @@ fn scalar_edit(
     }])
 }
 
-fn locate_patch(doc: &QmlDoc<'_>, kind: PatchKind, file: &str) -> Result<Vec<Edit>, PatchError> {
-    use PatchKind::*;
-    match kind {
-        MainPanelColor | MainPanelOpacity | MainPanelVisibility => {
-            let parent = doc.object_by_id("mainLayout", file)?;
-            let scope = doc.child_object_with_property(
-                parent,
-                "Rectangle",
-                "visible",
-                "interfaces.systemInfo.checkBackGround",
-                file,
-            )?;
-            let (property, expected, replacement) = match kind {
-                MainPanelColor => ("color", "\"#323941\"", "\"#000000\""),
-                MainPanelOpacity => ("opacity", "0.95", "1.0"),
-                MainPanelVisibility => {
-                    ("visible", "interfaces.systemInfo.checkBackGround", "false")
-                }
-                _ => unreachable!(),
-            };
+fn resolve_scope(
+    doc: &QmlDoc<'_>,
+    root_id: &str,
+    scope_steps: &[ScopeStep],
+    file: &str,
+) -> Result<usize, PatchError> {
+    let mut scope = doc.object_by_id(root_id, file)?;
+    for step in scope_steps {
+        scope = match *step {
+            ScopeStep::PropertyObject(name) => doc.property_object(scope, name, file)?,
+            ScopeStep::Member(name) => doc.object_member(scope, name, file)?,
+            ScopeStep::ChildObjectWithProperty {
+                class,
+                property,
+                expected,
+            } => doc.child_object_with_property(scope, class, property, expected, file)?,
+        };
+    }
+    Ok(scope)
+}
+
+fn locate_patch(doc: &QmlDoc<'_>, rule: PatchRule, file: &str) -> Result<Vec<Edit>, PatchError> {
+    match rule {
+        PatchRule::Scalar {
+            root_id,
+            scope,
+            property,
+            expected,
+            replacement,
+        } => {
+            let scope = resolve_scope(doc, root_id, scope, file)?;
             scalar_edit(doc, scope, property, expected, replacement, file)
         }
-        MenuPopupColor => {
-            let scope = doc.object_by_id("menuPopupBg", file)?;
-            scalar_edit(doc, scope, "color", "\"#2E3741\"", "\"#000000\"", file)
-        }
-        ButtonDefaultColor => {
-            let scope = doc.object_by_id("root", file)?;
-            scalar_edit(doc, scope, "bgColor", "\"#575E66\"", "\"#000000\"", file)
-        }
-        ButtonIdleFill => {
-            let scope = doc.object_by_id("background", file)?;
+        PatchRule::ExpressionLiterals {
+            root_id,
+            scope,
+            property,
+            expected_literal,
+            expected_count,
+            required_identifiers,
+            required_operators,
+            replacement,
+        } => {
+            let scope = resolve_scope(doc, root_id, scope, file)?;
             let spans = doc.expression_literal_spans(
                 scope,
-                "color",
-                "\"#575E66\"",
-                2,
-                &["objDeactive", "hasFocus"],
-                &["?", ":"],
+                property,
+                expected_literal,
+                expected_count,
+                required_identifiers,
+                required_operators,
                 file,
             )?;
             Ok(spans
@@ -804,107 +671,16 @@ fn locate_patch(doc: &QmlDoc<'_>, kind: PatchKind, file: &str) -> Result<Vec<Edi
                 .map(|span| Edit {
                     start: span.start,
                     end: span.end,
-                    replacement: "\"#000000\"".to_owned(),
+                    replacement: replacement.to_owned(),
                 })
                 .collect())
         }
-        CandidateBackgroundColor | CandidateBackgroundOpacity => {
-            let root = doc.object_by_id("styleRoot", file)?;
-            let scope = doc.object_member(
-                doc.property_object(root, "candidateListView", file)?,
-                "BG_AREA",
-                file,
-            )?;
-            if kind == CandidateBackgroundColor {
-                scalar_edit(doc, scope, "BG_COLOR", "\"#575E66\"", "\"#000000\"", file)
-            } else {
-                scalar_edit(doc, scope, "BG_OPACITY", "0.9", "1.0", file)
-            }
-        }
-        MainLayoutColor | MainLayoutSecondaryColor => {
-            let root = doc.object_by_id("styleRoot", file)?;
-            let scope = doc.object_member(
-                doc.property_object(root, "quickSettingMainView", file)?,
-                "MAINLAYOUT",
-                file,
-            )?;
-            if kind == MainLayoutColor {
-                scalar_edit(doc, scope, "COLOR", "\"#575E66\"", "\"transparent\"", file)
-            } else {
-                scalar_edit(doc, scope, "COLOR1", "\"#2E3741\"", "\"transparent\"", file)
-            }
-        }
-        RecentHistoryColor | EditPopupColor | MenuPopupAreaColor | MenuPopupButtonColor => {
-            let root = doc.object_by_id("styleRoot", file)?;
-            let quick = doc.property_object(root, "quickSettingMainView", file)?;
-            match kind {
-                RecentHistoryColor => scalar_edit(
-                    doc,
-                    doc.object_member(quick, "RECENT_AREA", file)?,
-                    "COLOR",
-                    "\"#3E444D\"",
-                    "\"#000000\"",
-                    file,
-                ),
-                EditPopupColor => {
-                    let editable = doc.object_member(quick, "EDITABLE_AREA", file)?;
-                    scalar_edit(
-                        doc,
-                        doc.object_member(editable, "BG_EDITBOX", file)?,
-                        "COLOR",
-                        "\"#2E3741\"",
-                        "\"#000000\"",
-                        file,
-                    )
-                }
-                MenuPopupAreaColor => scalar_edit(
-                    doc,
-                    doc.object_member(quick, "MENU_AREA", file)?,
-                    "BG_COLOR",
-                    "\"#404040\"",
-                    "\"#000000\"",
-                    file,
-                ),
-                MenuPopupButtonColor => {
-                    let menu = doc.object_member(quick, "MENU_AREA", file)?;
-                    scalar_edit(
-                        doc,
-                        doc.object_member(menu, "BUTTONS", file)?,
-                        "SETTING1_BG_COLOR",
-                        "\"#575E66\"",
-                        "\"#000000\"",
-                        file,
-                    )
-                }
-                _ => unreachable!(),
-            }
-        }
-        SliderPopupColor => {
-            let root = doc.object_by_id("styleRoot", file)?;
-            let slider = doc.property_object(root, "barSliderPopup", file)?;
-            scalar_edit(
-                doc,
-                doc.object_member(slider, "BG_AREA", file)?,
-                "COLOR",
-                "\"#575E66\"",
-                "\"#000000\"",
-                file,
-            )
-        }
-        ToastActivatedColor | ToastBackgroundColor | ToastLightOpacity => {
-            let root = doc.object_by_id("root", file)?;
-            let toast = doc.property_object(root, "toast", file)?;
-            let (property, expected, replacement) = match kind {
-                ToastActivatedColor => ("activatedColor", "\"#000000\"", "\"#FFFFFF\""),
-                ToastBackgroundColor => ("backgroundColor", "\"#787F86\"", "\"#000000\""),
-                ToastLightOpacity => ("lightOpacity", "0.5", "1.0"),
-                _ => unreachable!(),
-            };
-            scalar_edit(doc, toast, property, expected, replacement, file)
-        }
-        ToastLinkColor => {
-            let expected = "return style.toast.textColor";
-            let replacement = "return style.toast.backgroundColor";
+        PatchRule::TokenSequence {
+            expected,
+            replacement,
+            not_found,
+            ambiguous,
+        } => {
             let expected_tokens = lex_fragment(expected);
             let mut matches = Vec::new();
             for start in 0..doc.tokens.len() {
@@ -929,11 +705,8 @@ fn locate_patch(doc: &QmlDoc<'_>, kind: PatchKind, file: &str) -> Result<Vec<Edi
                         replacement: replacement.to_owned(),
                     }])
                 }
-                [] => Err(unsupported(file, "toast link color expression not found")),
-                _ => Err(unsupported(
-                    file,
-                    "toast link color expression is ambiguous",
-                )),
+                [] => Err(unsupported(file, not_found)),
+                _ => Err(unsupported(file, ambiguous)),
             }
         }
     }
@@ -1011,5 +784,91 @@ mod tests {
         output.replace_range(edit.start..edit.end, &edit.replacement);
         assert!(output.contains("first: ({ AREA: { COLOR: \"#000000\" } })"));
         assert!(output.contains("second: ({ AREA: { COLOR: \"#112233\" } })"));
+    }
+
+    #[test]
+    fn declarative_rule_applies_only_to_its_scoped_value_and_rejects_drift() {
+        const SCOPE: &[ScopeStep] = &[
+            ScopeStep::PropertyObject("nested"),
+            ScopeStep::Member("outer"),
+            ScopeStep::Member("inner"),
+        ];
+        const RULE: PatchRule = PatchRule::Scalar {
+            root_id: "fixtureRoot",
+            scope: SCOPE,
+            property: "color",
+            expected: "\"#112233\"",
+            replacement: "\"#000000\"",
+        };
+        let input = r##"Item {
+            id: fixtureRoot
+            property var nested: ({
+                outer: { inner: { color: "#112233" } },
+                sibling: { color: "#112233" }
+            })
+        }"##;
+
+        let doc = QmlDoc::parse(input, "fixture.qml").unwrap();
+        let edit = locate_patch(&doc, RULE, "fixture.qml").unwrap().remove(0);
+        let mut output = input.to_owned();
+        output.replace_range(edit.start..edit.end, &edit.replacement);
+        assert!(output.contains("inner: { color: \"#000000\" }"));
+        assert!(output.contains("sibling: { color: \"#112233\" }"));
+
+        let drifted = input.replace(
+            "inner: { color: \"#112233\" }",
+            "inner: { color: \"#445566\" }",
+        );
+        let doc = QmlDoc::parse(&drifted, "fixture.qml").unwrap();
+        assert!(matches!(
+            locate_patch(&doc, RULE, "fixture.qml"),
+            Err(PatchError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn unselected_patch_sites_are_still_validated() {
+        const SCOPE: &[ScopeStep] = &[];
+        let input = r##"Item { id: fixtureRoot; color: "#112233" }"##;
+        let doc = QmlDoc::parse(input, "fixture.qml").unwrap();
+        let docs = BTreeMap::from([("fixture.qml".to_owned(), doc)]);
+        let patches = [
+            PatchSpec {
+                rule: PatchRule::Scalar {
+                    root_id: "fixtureRoot",
+                    scope: SCOPE,
+                    property: "color",
+                    expected: "\"#112233\"",
+                    replacement: "\"#000000\"",
+                },
+                id: "selected",
+                label: "selected patch",
+                target: "fixture.qml",
+            },
+            PatchSpec {
+                rule: PatchRule::Scalar {
+                    root_id: "fixtureRoot",
+                    scope: SCOPE,
+                    property: "color",
+                    expected: "\"#445566\"",
+                    replacement: "\"#000000\"",
+                },
+                id: "unselected",
+                label: "unselected patch",
+                target: "fixture.qml",
+            },
+        ];
+        let selected = BTreeSet::from(["selected".to_owned()]);
+
+        let error = collect_patch_edits(&docs, &patches, &selected)
+            .err()
+            .unwrap();
+        assert_eq!(
+            error,
+            PatchError::Unsupported {
+                file: "fixture.qml".to_owned(),
+                detail: "unexpected value for color".to_owned(),
+            }
+        );
     }
 }
