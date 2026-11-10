@@ -4,8 +4,8 @@ use gpui::{
     App, Bounds, Context, CursorStyle, Element, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, FocusHandle, Focusable, GlobalElementId, IntoElement, KeyBinding, LayoutId,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render,
-    SharedString, ShapedLine, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div,
-    fill, hsla, point, prelude::*, px, relative, rgba, rgb, size,
+    ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div,
+    fill, hsla, point, prelude::*, px, relative, rgb, rgba, size,
 };
 
 actions!(
@@ -68,7 +68,6 @@ fn utf8_offset_to_utf16(text: &str, offset: usize) -> usize {
     }
     utf16_offset
 }
-
 
 pub struct LineInput {
     focus_handle: FocusHandle,
@@ -305,10 +304,9 @@ impl LineInput {
 
     fn replace_content(&mut self, range: Range<usize>, new_text: &str) {
         let new_text = new_text.replace('\n', " ").replace('\r', " ");
-        self.content = (self.content[..range.start].to_owned()
-            + &new_text
-            + &self.content[range.end..])
-            .into();
+        self.content =
+            (self.content[..range.start].to_owned() + &new_text + &self.content[range.end..])
+                .into();
         let cursor = range.start + new_text.len();
         self.selected_range = cursor..cursor;
         self.selection_reversed = false;
@@ -340,8 +338,6 @@ impl EntityInputHandler for LineInput {
             reversed: self.selection_reversed,
         })
     }
-
-
 
     fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
         self.marked_range
@@ -398,7 +394,6 @@ impl EntityInputHandler for LineInput {
         cx.notify();
     }
 
-
     fn bounds_for_range(
         &mut self,
         range_utf16: Range<usize>,
@@ -412,17 +407,10 @@ impl EntityInputHandler for LineInput {
         }
         let range = self.range_from_utf16(&range_utf16);
         Some(Bounds::from_corners(
-            point(
-                bounds.left() + line.x_for_index(range.start),
-                bounds.top(),
-            ),
-            point(
-                bounds.left() + line.x_for_index(range.end),
-                bounds.bottom(),
-            ),
+            point(bounds.left() + line.x_for_index(range.start), bounds.top()),
+            point(bounds.left() + line.x_for_index(range.end), bounds.bottom()),
         ))
     }
-
 
     fn character_index_for_point(
         &mut self,

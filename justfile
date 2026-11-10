@@ -38,4 +38,4 @@ verify: fmt-check test build
 
 # Maintainer-only check; requires ignored preview fixtures.
 verify-local-preview root=".":
-    @cd "{{ worktree_root }}" && export CARGO_TARGET_DIR="{{ cargo_target_dir }}" && if [ "{{ distill_available }}" = "true" ]; then distill --cwd "{{ worktree_root }}" cargo run -- --verify-local-preview {{root}}; else cargo run --quiet -- --verify-local-preview {{root}}; fi
+    @cd "{{ worktree_root }}" && export CARGO_TARGET_DIR="{{ cargo_target_dir }}" && if [ "{{ distill_available }}" = "true" ]; then distill --cwd "{{ worktree_root }}" cargo run -- dev verify-local-preview {{root}}; else cargo run --quiet -- dev verify-local-preview {{root}}; fi

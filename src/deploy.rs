@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use flate2::Compression;
@@ -11,7 +11,7 @@ use similar::TextDiff;
 use tar::{Archive, Builder, Header};
 use thiserror::Error;
 
-use crate::config::{self, ConfigError, UserConfig, identity_path};
+use crate::config::{self, ConfigError, UserConfig, identity_path, ssh_config_path};
 use crate::patcher::{self, PatchError};
 use crate::patches::{PATCHES, TARGETS};
 
@@ -19,6 +19,7 @@ const ASKPASS_SCRIPT: &str = include_str!("../support/ssh-askpass.sh");
 const TESTED_FIRMWARE_LABEL: Option<&str> = None;
 const MAX_QML_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_SOURCE_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_PROXY_JUMP_HOSTS: usize = 64;
 
 const PREFLIGHT_SCRIPT: &str = r#"#!/bin/sh
 set -eu
@@ -371,17 +372,40 @@ pub fn manual_report(
     refresh: &str,
     visual_result: &str,
 ) -> String {
-    let model = safe_report_value(&plan.model);
-    let firmware = safe_report_value(&plan.firmware_label);
-    let patch_lines = plan
-        .selected_labels
+    manual_report_for(
+        Some(&plan.model),
+        Some(&plan.firmware_label),
+        &plan.selected_labels,
+        Some(plan.structurally_verified),
+        deployment,
+        refresh,
+        visual_result,
+    )
+}
+
+pub fn manual_report_for(
+    model: Option<&str>,
+    firmware_label: Option<&str>,
+    selected_labels: &[&str],
+    structurally_verified: Option<usize>,
+    deployment: &str,
+    refresh: &str,
+    visual_result: &str,
+) -> String {
+    let Some(structurally_verified) = structurally_verified else {
+        return format!(
+            "Midnight UI Patcher report\nNo device inspection completed.\nVisual check: {visual_result}\n"
+        );
+    };
+    let model = safe_report_value(model.unwrap_or_default());
+    let firmware = safe_report_value(firmware_label.unwrap_or_default());
+    let patch_lines = selected_labels
         .iter()
         .map(|label| format!("- {}", safe_report_value(label)))
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "Midnight UI Patcher report\nModel: {model}\nFirmware label: {firmware}\nStructural checks: {}/{} patch sites matched\nSelected edits:\n{patch_lines}\nDeployment: {deployment}\nDisplay refresh: {refresh}\nVisual check: {visual_result}\n",
-        plan.structurally_verified,
+        "Midnight UI Patcher report\nModel: {model}\nFirmware label: {firmware}\nStructural checks: {structurally_verified}/{} patch sites matched\nSelected edits:\n{patch_lines}\nDeployment: {deployment}\nDisplay refresh: {refresh}\nVisual check: {visual_result}\n",
         PATCHES.len(),
     )
 }
@@ -583,12 +607,7 @@ fn compatibility_file(config: &UserConfig, plan: &DeploymentPlan) -> String {
     output
 }
 
-fn ssh_input(
-    config: &UserConfig,
-    remote_command: &str,
-    input: &[u8],
-    operation: &'static str,
-) -> Result<Output, DeployError> {
+fn ssh_common_command(config: &UserConfig) -> Result<Command, DeployError> {
     config::validate(config)?;
     if config.ssh_target.is_empty() {
         return Err(DeployError::SshSetup(
@@ -596,6 +615,14 @@ fn ssh_input(
         ));
     }
     let mut command = Command::new("ssh");
+    if let Some(ssh_config) = ssh_config_path(config) {
+        if !ssh_config.is_file() {
+            return Err(DeployError::SshSetup(
+                "configured OpenSSH config file does not exist".into(),
+            ));
+        }
+        command.arg("-F").arg(ssh_config);
+    }
     command
         .arg("-T")
         .args(["-o", "BatchMode=no"])
@@ -604,6 +631,11 @@ fn ssh_input(
         .args(["-o", "ConnectTimeout=10"])
         .args(["-o", "ServerAliveInterval=15"])
         .args(["-o", "LogLevel=ERROR"]);
+    Ok(command)
+}
+
+fn configured_ssh_command(config: &UserConfig) -> Result<Command, DeployError> {
+    let mut command = ssh_common_command(config)?;
     if config.port != 0 {
         command.arg("-p").arg(config.port.to_string());
     }
@@ -615,6 +647,157 @@ fn ssh_input(
         }
         command.arg("-i").arg(identity);
     }
+    Ok(command)
+}
+
+fn ssh_config_output(mut command: Command, target: &str) -> Result<Vec<u8>, DeployError> {
+    let output = command.arg("-G").arg(target).output().map_err(|error| {
+        DeployError::SshSetup(format!(
+            "OpenSSH could not resolve connection settings: {error}"
+        ))
+    })?;
+    if !output.status.success() {
+        return Err(DeployError::SshSetup(
+            "OpenSSH could not resolve connection settings".into(),
+        ));
+    }
+    Ok(output.stdout)
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ProxyJumpTarget {
+    host: String,
+    user: Option<String>,
+    port: Option<u16>,
+}
+
+fn proxy_jump_targets(output: &[u8]) -> Result<Vec<ProxyJumpTarget>, DeployError> {
+    let output = std::str::from_utf8(output).map_err(|_| {
+        DeployError::SshSetup("OpenSSH returned invalid resolved connection settings".into())
+    })?;
+    let jumps = output
+        .lines()
+        .find_map(|line| line.strip_prefix("proxyjump "))
+        .map(str::trim)
+        .unwrap_or("none");
+    if jumps.is_empty() || jumps == "none" {
+        return Ok(Vec::new());
+    }
+    jumps
+        .split(',')
+        .map(|jump| {
+            let jump = jump.trim();
+            let (user, authority) = match jump.rsplit_once('@') {
+                Some((user, authority)) if !user.is_empty() => (Some(user.to_owned()), authority),
+                Some(_) => return Err(invalid_proxy_jump()),
+                None => (None, jump),
+            };
+            let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
+                let close = bracketed.find(']').ok_or_else(invalid_proxy_jump)?;
+                let host = bracketed[..close].to_owned();
+                let suffix = &bracketed[close + 1..];
+                let port = if suffix.is_empty() {
+                    None
+                } else if let Some(port) = suffix.strip_prefix(':') {
+                    Some(parse_proxy_jump_port(port)?)
+                } else {
+                    return Err(invalid_proxy_jump());
+                };
+                (host, port)
+            } else if let Some((host, port)) = authority.rsplit_once(':') {
+                if host.contains(':') {
+                    return Err(invalid_proxy_jump());
+                }
+                (host.to_owned(), Some(parse_proxy_jump_port(port)?))
+            } else {
+                (authority.to_owned(), None)
+            };
+            if host.is_empty() {
+                return Err(invalid_proxy_jump());
+            }
+            Ok(ProxyJumpTarget { host, user, port })
+        })
+        .collect()
+}
+
+fn parse_proxy_jump_port(port: &str) -> Result<u16, DeployError> {
+    port.parse().map_err(|_| invalid_proxy_jump())
+}
+
+fn invalid_proxy_jump() -> DeployError {
+    DeployError::SshSetup("OpenSSH returned an invalid ProxyJump setting".into())
+}
+
+fn hash_ssh_config_output(hasher: &mut Sha256, output: &[u8]) {
+    hasher.update((output.len() as u64).to_be_bytes());
+    hasher.update(output);
+}
+
+fn hash_selected_ssh_config(hasher: &mut Sha256, config: &UserConfig) -> Result<(), DeployError> {
+    let Some(path) = ssh_config_path(config) else {
+        return Ok(());
+    };
+    let mut file = std::fs::File::open(path).map_err(|_| {
+        DeployError::SshSetup("configured OpenSSH config file could not be read".into())
+    })?;
+    let length = file
+        .metadata()
+        .map_err(|_| {
+            DeployError::SshSetup("configured OpenSSH config file could not be read".into())
+        })?
+        .len();
+    hasher.update(length.to_be_bytes());
+    let mut buffer = [0; 8192];
+    loop {
+        let read = file.read(&mut buffer).map_err(|_| {
+            DeployError::SshSetup("configured OpenSSH config file could not be read".into())
+        })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(())
+}
+
+pub fn ssh_routing_fingerprint(config: &UserConfig) -> Result<[u8; 32], DeployError> {
+    let destination = ssh_config_output(configured_ssh_command(config)?, &config.ssh_target)?;
+    let mut hasher = Sha256::new();
+    hash_ssh_config_output(&mut hasher, &destination);
+    hash_selected_ssh_config(&mut hasher, config)?;
+
+    let mut pending_jumps = proxy_jump_targets(&destination)?;
+    let mut visited_jumps = BTreeSet::new();
+    while let Some(jump) = pending_jumps.pop() {
+        if !visited_jumps.insert(jump.clone()) {
+            continue;
+        }
+        if visited_jumps.len() > MAX_PROXY_JUMP_HOSTS {
+            return Err(DeployError::SshSetup(
+                "OpenSSH ProxyJump chain exceeds the supported limit".into(),
+            ));
+        }
+        let mut command = ssh_common_command(config)?;
+        if let Some(user) = jump.user.as_deref() {
+            command.arg("-l").arg(user);
+        }
+        if let Some(port) = jump.port {
+            command.arg("-p").arg(port.to_string());
+        }
+        let settings = ssh_config_output(command, &jump.host)?;
+        hash_ssh_config_output(&mut hasher, &settings);
+        pending_jumps.extend(proxy_jump_targets(&settings)?);
+    }
+    Ok(hasher.finalize().into())
+}
+
+fn ssh_input(
+    config: &UserConfig,
+    remote_command: &str,
+    input: &[u8],
+    operation: &'static str,
+) -> Result<Output, DeployError> {
+    let mut command = configured_ssh_command(config)?;
     let askpass = prepare_askpass()?;
     command
         .arg(&config.ssh_target)
@@ -667,24 +850,34 @@ fn ssh_input(
 fn prepare_askpass() -> Result<PathBuf, DeployError> {
     #[cfg(target_os = "macos")]
     {
-        let path = config::config_path()?
+        let config_path = config::config_path()?;
+        let directory = config_path
             .parent()
-            .ok_or_else(|| DeployError::SshSetup("user config path unavailable".into()))?
-            .join("ssh-askpass.sh");
-        std::fs::write(&path, ASKPASS_SCRIPT).map_err(|error| {
-            DeployError::SshSetup(format!("could not create SSH prompt helper: {error}"))
-        })?;
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).map_err(
-            |error| DeployError::SshSetup(format!("could not protect SSH prompt helper: {error}")),
-        )?;
-        Ok(path)
+            .ok_or_else(|| DeployError::SshSetup("user config path unavailable".into()))?;
+        write_askpass_helper(directory)
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = ASKPASS_SCRIPT;
         Err(DeployError::SshSetup("one-time SSH prompts are currently supported only on macOS; use an SSH agent on this platform".into()))
     }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn write_askpass_helper(directory: &Path) -> Result<PathBuf, DeployError> {
+    config::ensure_private_directory(directory)?;
+    let path = directory.join("ssh-askpass.sh");
+    std::fs::write(&path, ASKPASS_SCRIPT).map_err(|error| {
+        DeployError::SshSetup(format!("could not create SSH prompt helper: {error}"))
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).map_err(
+            |error| DeployError::SshSetup(format!("could not protect SSH prompt helper: {error}")),
+        )?;
+    }
+    Ok(path)
 }
 
 fn validate_report_field(name: &str, value: &str) -> Result<(), DeployError> {
@@ -723,6 +916,67 @@ fn unix_seconds() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn askpass_helper_creates_a_private_directory_on_first_use() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!(
+                "askpass-dir-test-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        let directory = root.join("managed-config");
+        assert!(!directory.exists());
+
+        let path = write_askpass_helper(&directory).unwrap();
+        assert!(path.is_file());
+        assert!(!directory.join("config.toml").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn proxy_jump_parser_handles_aliases_users_ports_and_ipv6() {
+        assert_eq!(
+            proxy_jump_targets(b"proxyjump jump-a,root@jump-b:2222,[2001:db8::1]:2200\n").unwrap(),
+            vec![
+                ProxyJumpTarget {
+                    host: "jump-a".into(),
+                    user: None,
+                    port: None,
+                },
+                ProxyJumpTarget {
+                    host: "jump-b".into(),
+                    user: Some("root".into()),
+                    port: Some(2222),
+                },
+                ProxyJumpTarget {
+                    host: "2001:db8::1".into(),
+                    user: None,
+                    port: Some(2200),
+                },
+            ]
+        );
+        assert!(proxy_jump_targets(b"proxyjump none\n").unwrap().is_empty());
+        assert!(proxy_jump_targets(b"proxyjump user@[2001:db8::1:2200\n").is_err());
+    }
 
     fn source_archive(files: &[(&str, &str)]) -> Vec<u8> {
         let encoder = GzEncoder::new(Vec::new(), Compression::default());

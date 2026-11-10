@@ -10,27 +10,62 @@ use gpui::{
 
 use crate::config::{self, UserConfig};
 use crate::deploy::{self, DeploymentPlan};
-use crate::text_input::{self, LineInput};
 use crate::patches::{PATCHES, PatchSpec};
+use crate::text_input::{self, LineInput};
 const DEPLOY_SUCCESS: &str = "Installed/updated; five mounts and backup manifest verified";
 
-pub fn run() {
-    Application::new().run(|cx: &mut App| {
+pub fn run(config_path: Option<PathBuf>) {
+    Application::new().run(move |cx: &mut App| {
         text_input::bind_keys(cx);
         let bounds = Bounds::centered(None, size(px(980.0), px(900.0)), cx);
+        let config_path = config_path.clone();
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 ..Default::default()
             },
-            |_, cx| cx.new(|cx| AppView::new(cx)),
+            move |_, cx| cx.new(move |cx| AppView::new(config_path, cx)),
         )
         .expect("failed to open patcher window");
     });
 }
 
+enum SettingsFile {
+    Managed(PathBuf),
+    Explicit(PathBuf),
+}
+
+impl SettingsFile {
+    fn load(path: Option<PathBuf>) -> (Option<Self>, UserConfig, Option<String>) {
+        match path {
+            Some(path) => match config::load_or_create_at(&path) {
+                Ok(settings) => (Some(Self::Explicit(path)), settings, None),
+                Err(error) => (
+                    Some(Self::Explicit(path)),
+                    UserConfig::default(),
+                    Some(error.to_string()),
+                ),
+            },
+            None => match config::load_or_create() {
+                Ok((path, settings)) => (Some(Self::Managed(path)), settings, None),
+                Err(error) => (
+                    config::config_path().ok().map(Self::Managed),
+                    UserConfig::default(),
+                    Some(error.to_string()),
+                ),
+            },
+        }
+    }
+
+    fn save(&self, settings: &UserConfig) -> Result<(), config::ConfigError> {
+        match self {
+            Self::Managed(path) => config::save(path, settings),
+            Self::Explicit(path) => config::save_at(path, settings),
+        }
+    }
+}
 struct AppView {
-    config_path: Option<PathBuf>,
+    settings_file: Option<SettingsFile>,
     config: UserConfig,
     settings_fields: SettingsFields,
     settings_open: bool,
@@ -50,6 +85,7 @@ struct AppView {
 
 struct SettingsFields {
     ssh_target: Entity<LineInput>,
+    ssh_config_file: Entity<LineInput>,
     model: Entity<LineInput>,
     firmware_label: Entity<LineInput>,
     identity_file: Entity<LineInput>,
@@ -62,13 +98,19 @@ impl SettingsFields {
             ssh_target: cx.new(|cx| {
                 LineInput::new(cx, config.ssh_target.clone(), "root@TV_IP or host alias")
             }),
+            ssh_config_file: cx.new(|cx| {
+                LineInput::new(
+                    cx,
+                    config.ssh_config_file.clone(),
+                    "~/.ssh/config (optional)",
+                )
+            }),
             model: cx.new(|cx| LineInput::new(cx, config.model.clone(), "Optional TV model")),
             firmware_label: cx.new(|cx| {
                 LineInput::new(cx, config.firmware_label.clone(), "Optional firmware label")
             }),
-            identity_file: cx.new(|cx| {
-                LineInput::new(cx, config.identity_file.clone(), "~/.ssh/tv (optional)")
-            }),
+            identity_file: cx
+                .new(|cx| LineInput::new(cx, config.identity_file.clone(), "~/.ssh/tv (optional)")),
             port: cx.new(|cx| {
                 LineInput::new(
                     cx,
@@ -103,6 +145,11 @@ impl SettingsFields {
             .read_with(cx, |input, _| input.text())
             .trim()
             .to_owned();
+        config.ssh_config_file = self
+            .ssh_config_file
+            .read_with(cx, |input, _| input.text())
+            .trim()
+            .to_owned();
         config.model = self.model.read_with(cx, |input, _| input.text());
         config.firmware_label = self.firmware_label.read_with(cx, |input, _| input.text());
         config.identity_file = self.identity_file.read_with(cx, |input, _| input.text());
@@ -111,21 +158,13 @@ impl SettingsFields {
     }
 }
 
-
 impl AppView {
-    fn new(cx: &mut Context<Self>) -> Self {
-        let (config_path, config, error) = match config::load_or_create() {
-            Ok((path, config)) => (Some(path), config, None),
-            Err(error) => (
-                config::config_path().ok(),
-                UserConfig::default(),
-                Some(error.to_string()),
-            ),
-        };
+    fn new(config_path: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
+        let (settings_file, config, error) = SettingsFile::load(config_path);
         let settings_open = config.ssh_target.is_empty();
         let settings_fields = SettingsFields::new(&config, cx);
         Self {
-            config_path,
+            settings_file,
             config,
             settings_fields,
             settings_open,
@@ -172,12 +211,12 @@ impl AppView {
                 return;
             }
         };
-        let Some(path) = self.config_path.as_deref() else {
+        let Some(settings_file) = self.settings_file.as_ref() else {
             self.error = Some("User-local settings path is unavailable.".into());
             cx.notify();
             return;
         };
-        match config::save(path, &settings) {
+        match settings_file.save(&settings) {
             Ok(()) => {
                 self.config = settings;
                 self.settings_open = false;
@@ -301,7 +340,11 @@ impl AppView {
     }
 
     fn refresh_display(&mut self, cx: &mut Context<Self>) {
-        if self.busy || self.settings_open || self.deployment_status != DEPLOY_SUCCESS || !self.confirm_refresh {
+        if self.busy
+            || self.settings_open
+            || self.deployment_status != DEPLOY_SUCCESS
+            || !self.confirm_refresh
+        {
             return;
         }
         let config = self.config.clone();
@@ -332,7 +375,6 @@ impl AppView {
             });
         }).detach();
     }
-
 
     fn report(&self) -> String {
         match &self.plan {
@@ -390,6 +432,7 @@ impl Render for AppView {
                                 .child(div().debug_selector(|| "connection-settings-explainer".to_owned()).flex_1().min_w_0().text_sm().text_color(rgb(0xb7bbc2)).child("Saved locally outside the repository. Use an OpenSSH alias (including ProxyJump) or root@TV_IP. Passwords and private-key contents are never saved."))
                         )
                             .child(settings_field("SSH target", "Use root@TV_IP or an OpenSSH host alias.", self.settings_fields.ssh_target.clone()))
+                            .child(settings_field("OpenSSH config file (optional)", "Custom config for aliases and ProxyJump; blank uses the SSH client's default.", self.settings_fields.ssh_config_file.clone()))
                             .child(settings_field("SSH port", "Leave blank to use the SSH client's default port.", self.settings_fields.port.clone()))
                             .child(settings_field("SSH identity file (optional)", "Path to an existing private key; the key stays on this computer.", self.settings_fields.identity_file.clone()))
                             .child(settings_field("TV model (optional)", "Used only as local device metadata.", self.settings_fields.model.clone()))
@@ -626,7 +669,7 @@ mod visual_layout_tests {
             let config = UserConfig::default();
             let settings_fields = SettingsFields::new(&config, cx);
             AppView {
-                config_path: None,
+                settings_file: None,
                 config,
                 settings_fields,
                 settings_open: true,
@@ -653,5 +696,35 @@ mod visual_layout_tests {
         assert!(bounds.size.width > px(0.0));
         assert!(bounds.origin.x >= px(0.0));
         assert!(bounds.origin.x + bounds.size.width <= px(1568.0));
+    }
+    #[test]
+    fn explicit_settings_file_is_loaded_and_saved_by_the_gui_store() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!(
+                "gui-config-test-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        let path = root.join("config.toml");
+        let mut initial = UserConfig::default();
+        initial.ssh_target = "root@tv.local".into();
+        initial.ssh_config_file = "before/ssh_config".into();
+        config::save_at(&path, &initial).unwrap();
+
+        let (store, loaded, error) = SettingsFile::load(Some(path.clone()));
+        assert!(error.is_none());
+        assert_eq!(loaded.ssh_config_file, "before/ssh_config");
+        let mut edited = loaded;
+        edited.ssh_config_file = "after/ssh_config".into();
+        store.unwrap().save(&edited).unwrap();
+
+        let reloaded = config::load_or_create_at(&path).unwrap();
+        assert_eq!(reloaded.ssh_config_file, "after/ssh_config");
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
