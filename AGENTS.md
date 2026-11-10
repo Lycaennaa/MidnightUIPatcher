@@ -1,0 +1,27 @@
+# Instructions for future agents
+
+## Scope and safety
+- When using REA, filter the output for what you need and always use TOON output.
+
+- This project is a reversible runtime QML bind-mount theme for LG webOS. Never flash firmware, remount/overwrite system partitions, or write theme files into `/usr`.
+- Use the `ssh-jump` skill for TV connections. Do not store credentials, keys, or device-specific secrets in this project.
+- The active boot hook reads `/var/lib/webosbrew/black-theme/apply.sh`. Do not run the installer over an existing state directory or use package-manager installation as a shortcut; preserve and update the live state in place.
+- Before a device update, inspect the live hook, marker, lock, mount list, target hashes, and backup manifest. The theme currently covers five files, including `usr/lib/qml/QuickSettings/Component/BaseControlPanelButton.qml`.
+- Preserve all captured originals and the pre-update overlay backup. Keep `BACKUP-SHA256SUMS` synchronized and verify it from the backups directory before reapplying.
+- A display-service restart can interrupt the TV UI. Explain that risk and get current user approval before restarting `surface-manager-daemon.service`; earlier approval is not reusable. Do not restart WebAppMgr or broad Luna services speculatively.
+- File hashes and an active service do not prove the HDMI appearance. Ask the owner to visually check Quick Settings after a refresh.
+
+## Source of truth and packaging
+
+- `src/patcher.rs` is canonical for structural match-and-replace rules. Keep matches unique and strict; never add LG QML source, full source lines/blocks, or source-bearing diffs to Git.
+- `preview/base/`, `preview/overlay/`, captured manifests, and generated bundles are local-only fixtures or deployment artifacts. Keep them ignored and never stage them. The maintainer-only `--verify-local-preview` check uses local fixtures; owners do not need them.
+- `preview/*.sh` contains generic lifecycle code embedded in a per-owner bundle. The GUI fetches QML from the owner's TV, patches locally, creates checksums and streams the bundle over root SSH. There is no checked-in install package or supported IPK release workflow.
+- Do not use the fresh installer over existing state or use package-manager installation as an update shortcut. Before an update, inspect the live hook, marker, lock, mounts, target hashes, and backup manifest; preserve original and pre-update backups and verify `BACKUP-SHA256SUMS` from the backups directory.
+- A target-set change must be coordinated across the patcher and deployment scripts, verified against the owner's live target hashes, and covered by checks. Never add captured QML to make a match easier.
+- The target-capture helpers under `scripts/` are maintainer tools; they refuse to copy mounted sources. Use the `ssh-jump` skill for this TV and never put device addresses or credentials in project files.
+
+## Existing v1.0.3 theme behavior
+
+- The full Quick Settings panel background is transparent.
+- Idle tile fills are black. Preserve existing focus and disabled fill colors, and keep a visible focus indicator unless the owner explicitly requests a change.
+- Source matches come from each owner's TV at runtime. Do not rely on old captured-file hashes; inspect the live hook, marker, lock, mounts, target hashes, and backup manifest before every device update.

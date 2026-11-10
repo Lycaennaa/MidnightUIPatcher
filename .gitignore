@@ -1,0 +1,22 @@
+# TV-captured or patched LG QML is local-only; never commit it.
+**/*.qml
+
+# Generated or archived packages contain QML payloads.
+**/*.ipk
+**/*.tar.gz
+**/*.tgz
+ipk-builder/dist/
+archive/
+release/
+research/
+
+# Locally generated build and connection data.
+.build/
+output/
+target/
+**/.DS_Store
+/ipk-builder/
+/packaging/
+/preview/SHA256SUMS
+/preview/TARGET-SHA256SUMS
+/GRILL-DECISIONS.txt
