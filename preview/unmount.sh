@@ -1,14 +1,9 @@
 #!/bin/sh
 set -eu
-
+STATE=/var/lib/webosbrew/black-theme
 RUN_MARKER=/run/black-theme-overlay.active
-FILES='
-usr/lib/qml/SystemUI/Notification/Toast.qml
-usr/lib/qml/SystemUI/Notification/NotificationStyle.qml
-usr/lib/qml/QuickSettings/Containers/QuickSettingsMainView.qml
-usr/lib/qml/QuickSettings/Utils/Style.qml
-usr/lib/qml/QuickSettings/Component/BaseControlPanelButton.qml
-'
+
+# @include-manifest-functions@
 
 if [ "$(id -u)" != 0 ]; then
     echo "Black theme rollback requires root." >&2
@@ -40,15 +35,35 @@ if [ ! -f "$RUN_MARKER" ]; then
     exit 0
 fi
 
+if [ ! -f "$STATE/TARGET-SHA256SUMS" ] || [ -L "$STATE/TARGET-SHA256SUMS" ] ||
+   [ ! -f "$STATE/BACKUP-SHA256SUMS" ] || [ -L "$STATE/BACKUP-SHA256SUMS" ]; then
+    echo "Target or backup manifest is missing/non-regular; refusing to unmount." >&2
+    exit 1
+fi
+if ! validate_target_manifest "$STATE/TARGET-SHA256SUMS" ||
+   ! validate_backup_manifest "$STATE/BACKUP-SHA256SUMS"; then
+    echo "Target or backup manifest is invalid; refusing to unmount." >&2
+    exit 1
+fi
+FILES=$(awk '{ print $2 }' "$STATE/TARGET-SHA256SUMS")
+HISTORICAL_FILES=$(backup_original_paths "$STATE/BACKUP-SHA256SUMS")
+MANAGED_FILES="$FILES $HISTORICAL_FILES"
+
 mount_present() {
     awk -v target="$1" '$2 == target { found=1 } END { exit !found }' /proc/mounts
 }
 
 status=0
-for rel in $FILES; do
+for rel in $MANAGED_FILES; do
     target=/$rel
     if mount_present "$target" && ! umount "$target"; then
         echo "Could not unmount: $target" >&2
+        status=1
+    fi
+done
+for rel in $MANAGED_FILES; do
+    if mount_present "/$rel"; then
+        echo "Managed mount remains after unmount: /$rel" >&2
         status=1
     fi
 done

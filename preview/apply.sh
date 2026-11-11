@@ -3,13 +3,7 @@ set -eu
 
 STATE=/var/lib/webosbrew/black-theme
 RUN_MARKER=/run/black-theme-overlay.active
-FILES='
-usr/lib/qml/QuickSettings/Utils/Style.qml
-usr/lib/qml/QuickSettings/Containers/QuickSettingsMainView.qml
-usr/lib/qml/SystemUI/Notification/NotificationStyle.qml
-usr/lib/qml/SystemUI/Notification/Toast.qml
-usr/lib/qml/QuickSettings/Component/BaseControlPanelButton.qml
-'
+# @include-manifest-functions@
 
 if [ "$(id -u)" != 0 ]; then
     echo "Black theme hook requires root." >&2
@@ -47,22 +41,53 @@ fi
 mount_present() {
     awk -v target="$1" '$2 == target { found=1 } END { exit !found }' /proc/mounts
 }
+if [ ! -f "$STATE/TARGET-SHA256SUMS" ] || [ -L "$STATE/TARGET-SHA256SUMS" ] ||
+   [ ! -f "$STATE/BACKUP-SHA256SUMS" ] || [ -L "$STATE/BACKUP-SHA256SUMS" ]; then
+    echo "Target or backup manifest is missing/non-regular; refusing to mount." >&2
+    exit 1
+fi
+if ! validate_target_manifest "$STATE/TARGET-SHA256SUMS"; then
+    echo "Target manifest is invalid; refusing to mount." >&2
+    exit 1
+fi
+if ! validate_backup_manifest "$STATE/BACKUP-SHA256SUMS"; then
+    echo "Backup manifest is invalid; refusing to mount." >&2
+    exit 1
+fi
+FILES=$(awk '{ print $2 }' "$STATE/TARGET-SHA256SUMS")
+HISTORICAL_FILES=$(backup_original_paths "$STATE/BACKUP-SHA256SUMS")
+MANAGED_FILES="$FILES $HISTORICAL_FILES"
+if ! (cd "$STATE/backups" && sha256sum -c "$STATE/BACKUP-SHA256SUMS"); then
+    echo "Captured backups do not verify; refusing to mount." >&2
+    exit 1
+fi
+for rel in $FILES; do
+    if ! expected=$(awk -v name="$rel" '$2 == name { count++; value=$1 } END { if (count != 1) exit 1; print value }' "$STATE/TARGET-SHA256SUMS") ||
+       ! backup_expected=$(awk -v name="$rel" '$2 == name { count++; value=$1 } END { if (count != 1) exit 1; print value }' "$STATE/BACKUP-SHA256SUMS") ||
+       [ "$expected" != "$backup_expected" ]; then
+        echo "Target manifest does not match its captured original: $rel" >&2
+        exit 1
+    fi
+done
+
+for rel in $MANAGED_FILES; do
+    if mount_present "/$rel"; then
+        echo "Refusing to stack over a managed target mount: /$rel" >&2
+        exit 1
+    fi
+done
 
 for rel in $FILES; do
     source=$STATE/overlay/$rel
     target=/$rel
-    if [ ! -f "$source" ] || [ ! -f "$target" ] || [ -L "$target" ]; then
+    if [ ! -f "$source" ] || [ -L "$source" ] || [ ! -f "$target" ] || [ -L "$target" ]; then
         echo "Overlay source or target missing/not regular: $target" >&2
-        exit 1
-    fi
-    if mount_present "$target"; then
-        echo "Refusing to stack a mount over $target" >&2
         exit 1
     fi
 done
 if ! (cd / && sha256sum -c "$STATE/TARGET-SHA256SUMS"); then
- echo "Target QML no longer matches the captured files; refusing to mount." >&2
- exit 1
+    echo "Target QML no longer matches the captured files; refusing to mount." >&2
+    exit 1
 fi
 
 : > "$RUN_MARKER"

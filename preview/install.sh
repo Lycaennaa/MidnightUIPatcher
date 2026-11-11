@@ -32,13 +32,7 @@ HOOK_DIR=$ROOT/init.d
 STATE=$ROOT/black-theme
 HOOK=$HOOK_DIR/50-black-theme
 RUN_MARKER=/run/black-theme-overlay.active
-FILES='
-usr/lib/qml/QuickSettings/Utils/Style.qml
-usr/lib/qml/QuickSettings/Containers/QuickSettingsMainView.qml
-usr/lib/qml/SystemUI/Notification/NotificationStyle.qml
-usr/lib/qml/SystemUI/Notification/Toast.qml
-usr/lib/qml/QuickSettings/Component/BaseControlPanelButton.qml
-'
+# @include-manifest-functions@
 
 if [ ! -d "$HOOK_DIR" ] || ! command -v run-parts >/dev/null 2>&1; then
     echo "Homebrew init.d/run-parts not found; no changes made." >&2
@@ -65,22 +59,30 @@ fi
 mount_present() {
     awk -v target="$1" '$2 == target { found=1 } END { exit !found }' /proc/mounts
 }
+if [ ! -f "$PKG_DIR/TARGET-SHA256SUMS" ] || [ -L "$PKG_DIR/TARGET-SHA256SUMS" ] ||
+   ! validate_target_manifest "$PKG_DIR/TARGET-SHA256SUMS"; then
+    echo "Package target manifest is missing, unsafe, or invalid." >&2
+    exit 1
+fi
+FILES=$(awk '{ print $2 }' "$PKG_DIR/TARGET-SHA256SUMS")
+for rel in $FILES; do
+    if mount_present "/$rel"; then
+        echo "Managed target is already a mount point: /$rel" >&2
+        exit 1
+    fi
+done
 
 for rel in $FILES; do
     target=/$rel
     source=$PKG_DIR/overlay/$rel
-    if [ ! -f "$target" ] || [ -L "$target" ] || [ ! -f "$source" ]; then
+    if [ ! -f "$target" ] || [ -L "$target" ] || [ ! -f "$source" ] || [ -L "$source" ]; then
         echo "Expected regular QML source/overlay missing: $target" >&2
-        exit 1
-    fi
-    if mount_present "$target"; then
-        echo "Target is already a mount point: $target" >&2
         exit 1
     fi
 done
 if ! (cd / && sha256sum -c "$PKG_DIR/TARGET-SHA256SUMS"); then
- echo "Target QML differs from the captured device files; no changes made." >&2
- exit 1
+    echo "Target QML differs from the captured device files; no changes made." >&2
+    exit 1
 fi
 
 umask 077

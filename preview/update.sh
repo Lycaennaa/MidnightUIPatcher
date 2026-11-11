@@ -31,13 +31,7 @@ HOOK_DIR=$ROOT/init.d
 HOOK=$HOOK_DIR/50-black-theme
 RUN_MARKER=/run/black-theme-overlay.active
 OP_LOCK=/run/black-theme-overlay.lock
-FILES='
-usr/lib/qml/QuickSettings/Utils/Style.qml
-usr/lib/qml/QuickSettings/Containers/QuickSettingsMainView.qml
-usr/lib/qml/SystemUI/Notification/NotificationStyle.qml
-usr/lib/qml/SystemUI/Notification/Toast.qml
-usr/lib/qml/QuickSettings/Component/BaseControlPanelButton.qml
-'
+# @include-manifest-functions@
 
 if [ ! -d /run ] || [ ! -w /run ] || [ ! -r /proc/mounts ]; then
     echo "Runtime mount state is unavailable; no changes made." >&2
@@ -68,87 +62,180 @@ fi
 mount_present() {
     awk -v target="$1" '$2 == target { found=1 } END { exit !found }' /proc/mounts
 }
+is_installed() {
+    for installed in $INSTALLED_FILES; do
+        [ "$installed" = "$1" ] && return 0
+    done
+    return 1
+}
+is_historical() {
+    for historical in $HISTORICAL_FILES; do
+        [ "$historical" = "$1" ] && return 0
+    done
+    return 1
+}
 verify_active_state() {
     [ -f "$RUN_MARKER" ] || return 1
     (cd "$STATE/backups" && sha256sum -c "$STATE/BACKUP-SHA256SUMS" >/dev/null) || return 1
-    for rel in $FILES; do
+    for rel in $INSTALLED_FILES; do
         expected=$(awk -v name="$rel" '$2 == name { count++; value=$1 } END { if (count != 1) exit 1; print value }' "$STATE/TARGET-SHA256SUMS") || return 1
         actual=$(sha256sum "$STATE/backups/$rel" | awk '{print $1}')
         [ "$expected" = "$actual" ] || return 1
         mount_present "/$rel" || return 1
     done
+    for rel in $MANAGED_FILES; do
+        is_installed "$rel" && continue
+        mount_present "/$rel" && return 1
+    done
     return 0
 }
 verify_no_mounts() {
     [ ! -e "$RUN_MARKER" ] || return 1
-    for rel in $FILES; do mount_present "/$rel" && return 1; done
+    for rel in $MANAGED_FILES; do mount_present "/$rel" && return 1; done
     return 0
 }
+restore_previous_overlay() {
+    [ "$mounted_count" -gt 0 ] || return 0
+    if [ -f "$RUN_MARKER" ]; then
+        for rel in $PREVIOUS_FILES; do
+            if ! mount_present "/$rel" && ! mount --bind "$STATE/overlay/$rel" "/$rel"; then
+                echo "Could not restore the previous mount: /$rel" >&2
+                return 1
+            fi
+        done
+        if verify_active_state; then return 0; fi
+        echo "Previous mounts remain inconsistent; state and backups are preserved for recovery." >&2
+        return 1
+    fi
+    if "$STATE/apply.sh" --lock-held && verify_active_state; then return 0; fi
+    if ! "$STATE/unmount.sh" --lock-held || ! verify_no_mounts; then
+        echo "Could not reactivate or safely unmount the previous overlay; mounts require recovery." >&2
+        return 1
+    fi
+    if ! : > "$STATE/disabled"; then
+        echo "Previous overlay could not be reactivated; state and backups are preserved for recovery." >&2
+        return 1
+    fi
+    echo "Previous overlay could not be reactivated; the theme is left safely disabled." >&2
+    return 1
+}
 
-if [ ! -f "$STATE/TARGET-SHA256SUMS" ] || [ -L "$STATE/TARGET-SHA256SUMS" ] || [ ! -f "$STATE/BACKUP-SHA256SUMS" ] || [ -L "$STATE/BACKUP-SHA256SUMS" ]; then
-    echo "Existing target or backup manifest is missing; refusing update." >&2
+if [ ! -f "$STATE/TARGET-SHA256SUMS" ] || [ -L "$STATE/TARGET-SHA256SUMS" ] ||
+   [ ! -f "$STATE/BACKUP-SHA256SUMS" ] || [ -L "$STATE/BACKUP-SHA256SUMS" ] ||
+   [ ! -f "$PKG_DIR/TARGET-SHA256SUMS" ] || [ -L "$PKG_DIR/TARGET-SHA256SUMS" ]; then
+    echo "Existing or package target/backup manifest is missing/non-regular; refusing update." >&2
     exit 1
 fi
+if ! validate_target_manifest "$STATE/TARGET-SHA256SUMS" ||
+   ! validate_target_manifest "$PKG_DIR/TARGET-SHA256SUMS" ||
+   ! validate_backup_manifest "$STATE/BACKUP-SHA256SUMS"; then
+    echo "Existing or package target/backup manifest is invalid; refusing update." >&2
+    exit 1
+fi
+INSTALLED_FILES=$(awk '{ print $2 }' "$STATE/TARGET-SHA256SUMS")
+PACKAGE_FILES=$(awk '{ print $2 }' "$PKG_DIR/TARGET-SHA256SUMS")
+HISTORICAL_FILES=$(backup_original_paths "$STATE/BACKUP-SHA256SUMS")
+PREVIOUS_FILES=$INSTALLED_FILES
+MANAGED_FILES="$INSTALLED_FILES $PACKAGE_FILES $HISTORICAL_FILES"
 if ! (cd "$STATE/backups" && sha256sum -c "$STATE/BACKUP-SHA256SUMS"); then
     echo "Existing backup manifest does not verify; no state changed." >&2
     exit 1
 fi
-installed_entries=$(awk 'NF { count++ } END { print count + 0 }' "$STATE/TARGET-SHA256SUMS")
-package_entries=$(awk 'NF { count++ } END { print count + 0 }' "$PKG_DIR/TARGET-SHA256SUMS")
-if [ "$installed_entries" -ne 5 ] || [ "$package_entries" -ne 5 ]; then
-    echo "Target manifests must each contain exactly five entries." >&2
-    exit 1
-fi
-for rel in $FILES; do
-    if ! expected=$(awk -v name="$rel" '$2 == name { count++; value=$1 } END { if (count != 1) exit 1; print value }' "$STATE/TARGET-SHA256SUMS"); then
-        echo "Installed target manifest is missing or duplicates $rel; refusing update." >&2
+for rel in $INSTALLED_FILES; do
+    if ! is_historical "$rel" ||
+       [ ! -f "/$rel" ] || [ -L "/$rel" ] ||
+       [ ! -f "$STATE/backups/$rel" ] || [ -L "$STATE/backups/$rel" ] ||
+       [ ! -f "$STATE/overlay/$rel" ] || [ -L "$STATE/overlay/$rel" ]; then
+        echo "Required installed target, original backup, or overlay is missing/non-regular: /$rel" >&2
         exit 1
     fi
-    if ! package_expected=$(awk -v name="$rel" '$2 == name { count++; value=$1 } END { if (count != 1) exit 1; print value }' "$PKG_DIR/TARGET-SHA256SUMS"); then
-        echo "Package target manifest is missing or duplicates $rel; refusing update." >&2
-        exit 1
-    fi
-    if [ "$package_expected" != "$expected" ]; then
-        echo "Package does not match the installed captured originals: $rel" >&2
+    if ! expected=$(awk -v name="$rel" '$2 == name { count++; value=$1 } END { if (count != 1) exit 1; print value }' "$STATE/TARGET-SHA256SUMS") ||
+       ! backup_expected=$(awk -v name="$rel" '$2 == name { count++; value=$1 } END { if (count != 1) exit 1; print value }' "$STATE/BACKUP-SHA256SUMS"); then
+        echo "Installed target or direct-original backup is missing/duplicated: $rel" >&2
         exit 1
     fi
     actual=$(sha256sum "$STATE/backups/$rel" | awk '{print $1}')
-    if [ "$actual" != "$expected" ]; then
+    if [ "$actual" != "$expected" ] || [ "$backup_expected" != "$expected" ]; then
         echo "Captured original does not match the installed target hash: $rel" >&2
         exit 1
     fi
 done
-
-
-mounted_count=0
-for rel in $FILES; do
-    target=/$rel
-    if [ ! -f "$target" ] || [ -L "$target" ] || [ ! -f "$STATE/backups/$rel" ] || [ -L "$STATE/backups/$rel" ] || [ ! -f "$PKG_DIR/overlay/$rel" ] || [ -L "$PKG_DIR/overlay/$rel" ]; then
-        echo "Required target, backup, or new overlay is missing/non-regular: $target" >&2
+for rel in $PACKAGE_FILES; do
+    if ! package_expected=$(awk -v name="$rel" '$2 == name { count++; value=$1 } END { if (count != 1) exit 1; print value }' "$PKG_DIR/TARGET-SHA256SUMS"); then
+        echo "Package target manifest is missing or duplicates $rel; refusing update." >&2
         exit 1
     fi
-    if mount_present "$target"; then mounted_count=$((mounted_count + 1)); fi
+    if [ ! -f "$PKG_DIR/overlay/$rel" ] || [ -L "$PKG_DIR/overlay/$rel" ]; then
+        echo "New overlay is missing or non-regular: /$rel" >&2
+        exit 1
+    fi
+    if is_historical "$rel"; then
+        if ! backup_expected=$(awk -v name="$rel" '$2 == name { count++; value=$1 } END { if (count != 1) exit 1; print value }' "$STATE/BACKUP-SHA256SUMS") ||
+           [ "$backup_expected" != "$package_expected" ]; then
+            echo "Package does not match the preserved captured original: $rel" >&2
+            exit 1
+        fi
+    else
+        if mount_present "/$rel"; then
+            echo "New target is already mounted and has no preserved original: /$rel" >&2
+            exit 1
+        fi
+        if [ ! -f "/$rel" ] || [ -L "/$rel" ]; then
+            echo "New target is missing or non-regular: /$rel" >&2
+            exit 1
+        fi
+        actual=$(sha256sum "/$rel" | awk '{print $1}')
+        if [ "$actual" != "$package_expected" ]; then
+            echo "New target differs from its package-captured original: $rel" >&2
+            exit 1
+        fi
+    fi
+done
+
+mounted_count=0
+for rel in $MANAGED_FILES; do
+    if mount_present "/$rel"; then mounted_count=$((mounted_count + 1)); fi
 done
 if [ -f "$RUN_MARKER" ]; then
-    if [ "$mounted_count" -ne 5 ]; then
-        echo "Mount marker and mount list disagree; refusing update." >&2
+    if ! verify_active_state; then
+        echo "Mount marker, installed targets, backups, and mount list disagree; refusing update." >&2
         exit 1
     fi
 else
-    if [ "$mounted_count" -ne 0 ]; then
+    if ! verify_no_mounts; then
         echo "Mounts exist without the active marker; refusing update." >&2
+        exit 1
+    fi
+    if ! (cd / && sha256sum -c "$STATE/TARGET-SHA256SUMS"); then
+        echo "Live targets differ from the installed captured originals; refusing update." >&2
         exit 1
     fi
 fi
 if [ "$mounted_count" -eq 0 ] && ! (cd / && sha256sum -c "$PKG_DIR/TARGET-SHA256SUMS"); then
-    echo "Live targets differ from the captured originals; refusing update." >&2
+    echo "Live targets differ from the new captured originals; refusing update." >&2
     exit 1
 fi
-
 STAMP=$(date +%Y%m%d%H%M%S)
 STAGE=$ROOT/black-theme.next.$$
 PREVIOUS=$ROOT/black-theme.previous.$$
 PREUPDATE=pre-update-$STAMP-$$
+write_backup_manifest() {
+    {
+        cat "$STATE/BACKUP-SHA256SUMS"
+        for rel in $PACKAGE_FILES; do
+            is_historical "$rel" && continue
+            (cd "$1" && sha256sum "$rel")
+        done
+        for rel in $PREVIOUS_FILES; do
+            (cd "$1" && sha256sum "$PREUPDATE/overlay/$rel")
+        done
+        for metadata in TARGET-SHA256SUMS COMPATIBILITY apply.sh unmount.sh uninstall.sh; do
+            if [ -f "$1/$PREUPDATE/$metadata" ]; then
+                (cd "$1" && sha256sum "$PREUPDATE/$metadata")
+            fi
+        done
+    } > "$2"
+}
 if [ -e "$STAGE" ] || [ -e "$PREVIOUS" ] || [ -e "$STATE/backups/$PREUPDATE" ]; then
     echo "A temporary update path already exists; no state changed." >&2
     exit 1
@@ -161,13 +248,47 @@ if ! cp -R "$STATE/." "$STAGE/"; then
     echo "Could not stage existing state; no state changed." >&2
     exit 1
 fi
-mkdir -p "$STAGE/backups/$PREUPDATE/overlay"
-for rel in $FILES; do
+rm -rf "$STAGE/overlay"
+mkdir -p "$STAGE/overlay" "$STAGE/backups/$PREUPDATE/overlay"
+for rel in $PREVIOUS_FILES; do
     dir=$(dirname "$rel")
-    mkdir -p "$STAGE/overlay/$dir" "$STAGE/backups/$PREUPDATE/overlay/$dir"
+    mkdir -p "$STAGE/backups/$PREUPDATE/overlay/$dir"
     cp "$STATE/overlay/$rel" "$STAGE/backups/$PREUPDATE/overlay/$rel"
+    chmod 644 "$STAGE/backups/$PREUPDATE/overlay/$rel"
+done
+for rel in $PACKAGE_FILES; do
+    if ! is_historical "$rel"; then
+        target=/$rel
+        if mount_present "$target" || [ ! -f "$target" ] || [ -L "$target" ]; then
+            echo "New target must be unmounted and regular before its original is captured: $target" >&2
+            exit 1
+        fi
+        package_expected=$(awk -v name="$rel" '$2 == name { count++; value=$1 } END { if (count != 1) exit 1; print value }' "$PKG_DIR/TARGET-SHA256SUMS")
+        actual=$(sha256sum "$target" | awk '{print $1}')
+        if [ "$actual" != "$package_expected" ]; then
+            echo "New target differs from its package-captured original: $rel" >&2
+            exit 1
+        fi
+        if [ -e "$STAGE/backups/$rel" ] || [ -L "$STAGE/backups/$rel" ]; then
+            echo "An unmanifested backup already occupies the new target path: $rel" >&2
+            exit 1
+        fi
+        dir=$(dirname "$rel")
+        mkdir -p "$STAGE/backups/$dir"
+        cp "$target" "$STAGE/backups/$rel"
+        chmod 600 "$STAGE/backups/$rel"
+        actual=$(sha256sum "$STAGE/backups/$rel" | awk '{print $1}')
+        if [ "$actual" != "$package_expected" ]; then
+            echo "New target original changed while being captured: $rel" >&2
+            exit 1
+        fi
+    fi
+done
+for rel in $PACKAGE_FILES; do
+    dir=$(dirname "$rel")
+    mkdir -p "$STAGE/overlay/$dir"
     cp "$PKG_DIR/overlay/$rel" "$STAGE/overlay/$rel"
-    chmod 644 "$STAGE/overlay/$rel" "$STAGE/backups/$PREUPDATE/overlay/$rel"
+    chmod 644 "$STAGE/overlay/$rel"
 done
 for metadata in TARGET-SHA256SUMS COMPATIBILITY apply.sh unmount.sh uninstall.sh; do
     if [ -f "$STATE/$metadata" ]; then cp "$STATE/$metadata" "$STAGE/backups/$PREUPDATE/$metadata"; fi
@@ -179,33 +300,15 @@ cp "$PKG_DIR/unmount.sh" "$STAGE/unmount.sh"
 cp "$PKG_DIR/uninstall.sh" "$STAGE/uninstall.sh"
 chmod 700 "$STAGE/apply.sh" "$STAGE/unmount.sh" "$STAGE/uninstall.sh"
 
-{
-    for rel in $FILES; do (cd "$STAGE/backups" && sha256sum "$rel"); done
-    for rel in $FILES; do (cd "$STAGE/backups" && sha256sum "$PREUPDATE/overlay/$rel"); done
-    for metadata in TARGET-SHA256SUMS COMPATIBILITY apply.sh unmount.sh uninstall.sh; do
-        if [ -f "$STAGE/backups/$PREUPDATE/$metadata" ]; then
-            (cd "$STAGE/backups" && sha256sum "$PREUPDATE/$metadata")
-        fi
-    done
-    for old in "$STAGE"/backups/pre-update-*; do
-        [ -d "$old" ] || continue
-        case "$old" in "$STAGE/backups/$PREUPDATE") continue ;; esac
-        for rel in $FILES; do
-            [ ! -f "$old/overlay/$rel" ] || (cd "$STAGE/backups" && sha256sum "${old#"$STAGE/backups/"}/overlay/$rel")
-        done
-        for metadata in TARGET-SHA256SUMS COMPATIBILITY apply.sh unmount.sh uninstall.sh; do
-            [ ! -f "$old/$metadata" ] || (cd "$STAGE/backups" && sha256sum "${old#"$STAGE/backups/"}/$metadata")
-        done
-    done
-} > "$STAGE/BACKUP-SHA256SUMS"
-if ! (cd "$STAGE/backups" && sha256sum -c "$STAGE/BACKUP-SHA256SUMS"); then
+write_backup_manifest "$STAGE/backups" "$STAGE/BACKUP-SHA256SUMS"
+if ! validate_backup_manifest "$STAGE/BACKUP-SHA256SUMS" ||
+   ! (cd "$STAGE/backups" && sha256sum -c "$STAGE/BACKUP-SHA256SUMS"); then
     echo "Staged original/pre-update backups do not verify; no live state changed." >&2
     exit 1
 fi
-
 if [ -f "$RUN_MARKER" ]; then
     unmounted=''
-    for rel in $FILES; do
+    for rel in $PREVIOUS_FILES; do
         target=/$rel
         if ! umount "$target"; then
             restore_status=0
@@ -224,44 +327,49 @@ if [ -f "$RUN_MARKER" ]; then
         fi
         unmounted="$rel $unmounted"
     done
-    for rel in $FILES; do
+    for rel in $MANAGED_FILES; do
         if mount_present "/$rel"; then
-            echo "Mount remains after successful unmount command; preserving old state for recovery." >&2
+            echo "Mount remains after successful unmount command; restoring the previous overlay." >&2
+            restore_previous_overlay || true
             exit 1
         fi
     done
     rm -f "$RUN_MARKER"
 fi
 if ! verify_no_mounts; then
-    echo "Mount marker or mount list remains active after unmount; no state swap occurred." >&2
+    echo "A managed target mount or marker remains after unmount; no state swap occurred." >&2
+    restore_previous_overlay || true
+    exit 1
+fi
+if ! (cd / && sha256sum -c "$STATE/TARGET-SHA256SUMS"); then
+    echo "Installed target hashes changed during unmount. No state swap occurred; backups are preserved." >&2
+    restore_previous_overlay || true
     exit 1
 fi
 if ! (cd / && sha256sum -c "$PKG_DIR/TARGET-SHA256SUMS"); then
-    echo "Target hashes changed during unmount. No state swap occurred; the old overlay remains unmounted and backups are preserved." >&2
+    echo "New target hashes changed during unmount. No state swap occurred; backups are preserved." >&2
+    restore_previous_overlay || true
     exit 1
 fi
 
+
 if ! mv "$STATE" "$PREVIOUS"; then
-    if [ "$mounted_count" -eq 5 ] && { ! "$STATE/apply.sh" --lock-held || ! verify_active_state; }; then
-        echo "Could not stage update; original state remains, but overlay reactivation is unverified." >&2
-    else
-        echo "Could not stage update; original state and its prior active state are preserved." >&2
-    fi
+    restore_previous_overlay || true
+    echo "Could not stage update; original state is preserved." >&2
     exit 1
 fi
 if ! mv "$STAGE" "$STATE"; then
     if mv "$PREVIOUS" "$STATE"; then
-        if [ "$mounted_count" -eq 5 ] && { ! "$STATE/apply.sh" --lock-held || ! verify_active_state; }; then
-            echo "Staged state was rejected; original state restored but overlay reactivation is unverified." >&2
-        else
-            echo "Staged state was rejected; original state restored." >&2
-        fi
+        INSTALLED_FILES=$PREVIOUS_FILES
+        restore_previous_overlay || true
+        echo "Staged state was rejected; original state restored." >&2
     else
         echo "Staged state activation failed. Preserve $PREVIOUS and $STAGE for recovery." >&2
     fi
     exit 1
 fi
 STAGE=''
+INSTALLED_FILES=$PACKAGE_FILES
 
 activation_failed=0
 if ! "$STATE/apply.sh" --lock-held || ! verify_active_state; then
@@ -269,50 +377,60 @@ if ! "$STATE/apply.sh" --lock-held || ! verify_active_state; then
 fi
 if [ "$activation_failed" -ne 0 ]; then
     echo "New overlay activation failed; attempting to restore the pre-update overlay." >&2
+    FAILED=$ROOT/black-theme.failed-overlay.$$
     if ! "$STATE/unmount.sh" --lock-held || ! verify_no_mounts; then
-        echo "Could not verify zero new mounts. Preserve $STATE, $PREVIOUS, and the transferred bundle for recovery." >&2
+        echo "Could not verify zero mounts. Preserve $STATE and $PREVIOUS for recovery." >&2
         exit 1
     fi
-    ROLLBACK_OVERLAY=$ROOT/black-theme.rollback-overlay.$$
-    FAILED_OVERLAY=$ROOT/black-theme.failed-overlay.$$
-    if [ -e "$ROLLBACK_OVERLAY" ] || [ -e "$FAILED_OVERLAY" ]; then
-        echo "Rollback staging path already exists. Preserve $STATE and $PREVIOUS for recovery." >&2
+    if [ -e "$FAILED" ]; then
+        echo "Failed-state recovery path already exists. Preserve $STATE and $PREVIOUS for recovery." >&2
         exit 1
     fi
-    mkdir -m 700 "$ROLLBACK_OVERLAY"
-    for rel in $FILES; do
-        dir=$(dirname "$rel")
-        mkdir -p "$ROLLBACK_OVERLAY/$dir"
-        cp "$STATE/backups/$PREUPDATE/overlay/$rel" "$ROLLBACK_OVERLAY/$rel"
-        chmod 644 "$ROLLBACK_OVERLAY/$rel"
-    done
-    cp "$STATE/backups/$PREUPDATE/COMPATIBILITY" "$STATE/COMPATIBILITY.rollback.$$"
-    if ! mv "$STATE/COMPATIBILITY.rollback.$$" "$STATE/COMPATIBILITY"; then
-        echo "Could not restore compatibility metadata. Preserve $STATE, $PREVIOUS, and $ROLLBACK_OVERLAY." >&2
+    if ! mv "$STATE" "$FAILED" || ! mv "$PREVIOUS" "$STATE"; then
+        echo "Could not restore the previous state. Preserve $STATE, $PREVIOUS, and $FAILED for recovery." >&2
         exit 1
     fi
-    if ! mv "$STATE/overlay" "$FAILED_OVERLAY"; then
-        echo "Could not stage failed overlay. Preserve $STATE, $PREVIOUS, and $ROLLBACK_OVERLAY." >&2
-        exit 1
-    fi
-    if ! mv "$ROLLBACK_OVERLAY" "$STATE/overlay"; then
-        if ! mv "$FAILED_OVERLAY" "$STATE/overlay"; then
-            echo "Overlay restoration failed. Preserve $PREVIOUS, $FAILED_OVERLAY, and $ROLLBACK_OVERLAY." >&2
-            exit 1
+    INSTALLED_FILES=$PREVIOUS_FILES
+    for rel in $PACKAGE_FILES; do
+        if ! is_historical "$rel"; then
+            if [ -e "$STATE/backups/$rel" ] || [ -L "$STATE/backups/$rel" ] ||
+               [ ! -f "$FAILED/backups/$rel" ] || [ -L "$FAILED/backups/$rel" ]; then
+                echo "Could not preserve a newly captured original during rollback: $rel" >&2
+                exit 1
+            fi
+            package_expected=$(awk -v name="$rel" '$2 == name { count++; value=$1 } END { if (count != 1) exit 1; print value }' "$PKG_DIR/TARGET-SHA256SUMS")
+            actual=$(sha256sum "$FAILED/backups/$rel" | awk '{print $1}')
+            if [ "$actual" != "$package_expected" ]; then
+                echo "Newly captured original failed rollback verification: $rel" >&2
+                exit 1
+            fi
+            dir=$(dirname "$rel")
+            mkdir -p "$STATE/backups/$dir"
+            cp "$FAILED/backups/$rel" "$STATE/backups/$rel"
+            chmod 600 "$STATE/backups/$rel"
         fi
-        echo "Could not activate restored overlay. Preserve $STATE and $PREVIOUS for recovery." >&2
+    done
+    if [ -e "$STATE/backups/$PREUPDATE" ] || ! cp -R "$FAILED/backups/$PREUPDATE" "$STATE/backups/$PREUPDATE"; then
+        echo "Could not preserve the pre-update overlay snapshot. Preserve $STATE and $FAILED for recovery." >&2
+        exit 1
+    fi
+    write_backup_manifest "$STATE/backups" "$STATE/BACKUP-SHA256SUMS.rollback.$$"
+    if ! validate_backup_manifest "$STATE/BACKUP-SHA256SUMS.rollback.$$" ||
+       ! mv "$STATE/BACKUP-SHA256SUMS.rollback.$$" "$STATE/BACKUP-SHA256SUMS" ||
+       ! (cd "$STATE/backups" && sha256sum -c "$STATE/BACKUP-SHA256SUMS"); then
+        echo "Could not verify the restored backup manifest. Preserve $STATE and $FAILED for recovery." >&2
         exit 1
     fi
     if ! "$STATE/apply.sh" --lock-held || ! verify_active_state; then
         if ! "$STATE/unmount.sh" --lock-held || ! verify_no_mounts; then
-            echo "Previous overlay activation failed and mounts remain uncertain. Preserve $STATE, $PREVIOUS, and $FAILED_OVERLAY." >&2
+            echo "Previous overlay activation failed and mounts remain uncertain. Preserve $STATE and $FAILED for recovery." >&2
         else
-            echo "Previous overlay files were restored, but reapplication did not verify. Preserve $STATE, $PREVIOUS, and $FAILED_OVERLAY." >&2
+            echo "Previous overlay files were restored, but reapplication did not verify. Preserve $STATE and $FAILED for recovery." >&2
         fi
         exit 1
     fi
-    if ! rm -rf "$FAILED_OVERLAY" "$PREVIOUS"; then
-        echo "Previous overlay is active and verified, but recovery cleanup is incomplete. Inspect $STATE and remaining recovery paths." >&2
+    if ! rm -rf "$FAILED"; then
+        echo "Previous overlay is active and verified, but failed-state cleanup is incomplete. Preserve backups and inspect $FAILED." >&2
         exit 1
     fi
     echo "New overlay failed; the previous overlay was restored and verified. Original and pre-update backups remain synchronized; transferred bundle retained for recovery." >&2

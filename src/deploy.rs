@@ -21,31 +21,65 @@ const MAX_QML_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_SOURCE_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PROXY_JUMP_HOSTS: usize = 64;
 
-const PREFLIGHT_SCRIPT: &str = r#"#!/bin/sh
-set -eu
+macro_rules! remote_script {
+    ($body:literal) => {
+        concat!(
+            "#!/bin/sh\nset -eu\n",
+            include_str!("../preview/manifest-functions.sh"),
+            r#"
+validate_target_arguments() {
+    [ "$#" -gt 0 ] || return 1
+    seen=' '
+    for rel do
+        valid_qml_path "$rel" || return 1
+        case "$seen" in *" $rel "*) return 1 ;; esac
+        seen="$seen$rel "
+    done
+}
+manifest_paths() {
+    awk '{ print $2 }' "$1"
+}
+manifest_has_path() {
+    awk -v name="$2" '$2 == name { found = 1 } END { exit !found }' "$1"
+}
+manifest_hash() {
+    awk -v name="$2" '$2 == name { count++; value = tolower($1) } END { if (count != 1) exit 1; print value }' "$1"
+}
+contains_path() {
+    for candidate in $1; do
+        [ "$candidate" = "$2" ] && return 0
+    done
+    return 1
+}
+mount_present() {
+    awk -v target="$1" '$2 == target { found = 1 } END { exit !found }' /proc/mounts
+}
+"#,
+            $body
+        )
+    };
+}
+
+const PREFLIGHT_SCRIPT: &str = remote_script!(
+    r#"
 STATE=/var/lib/webosbrew/black-theme
 HOOK=/var/lib/webosbrew/init.d/50-black-theme
 RUN_MARKER=/run/black-theme-overlay.active
 LOCK=/run/black-theme-overlay.lock
-FILES='
-usr/lib/qml/QuickSettings/Utils/Style.qml
-usr/lib/qml/QuickSettings/Containers/QuickSettingsMainView.qml
-usr/lib/qml/SystemUI/Notification/NotificationStyle.qml
-usr/lib/qml/SystemUI/Notification/Toast.qml
-usr/lib/qml/QuickSettings/Component/BaseControlPanelButton.qml
-'
 if [ "$(id -u)" != 0 ]; then echo "SSH target is not root." >&2; exit 1; fi
 if [ -e "$LOCK" ] || [ -e /run/black-theme-update.lock ]; then echo "A theme operation is active; retry after it finishes." >&2; exit 1; fi
 if ! command -v awk >/dev/null 2>&1 || ! command -v sha256sum >/dev/null 2>&1 || ! command -v tar >/dev/null 2>&1; then
     echo "Required inspection tools are unavailable." >&2; exit 1
 fi
-mount_present() { awk -v target="$1" '$2 == target { found=1 } END { exit !found }' /proc/mounts; }
+validate_target_arguments "$@" || { echo "Current target arguments are empty, duplicated, or unsafe." >&2; exit 1; }
+TARGET_FILES=
+for rel do TARGET_FILES="$TARGET_FILES $rel"; done
 for recovery in /var/lib/webosbrew/black-theme.previous.* /var/lib/webosbrew/black-theme.failed-overlay.* /var/lib/webosbrew/black-theme.rollback-overlay.*; do
     [ -e "$recovery" ] || continue
     echo "Unresolved update recovery path found; preserve and inspect: $recovery" >&2
     exit 1
 done
-if [ -e "$STATE" ]; then
+if [ -e "$STATE" ] || [ -L "$STATE" ]; then
     if [ ! -d "$STATE" ] || [ -L "$STATE" ] || [ ! -d "$STATE/backups" ] || [ -L "$STATE/backups" ] || [ ! -d "$STATE/overlay" ] || [ -L "$STATE/overlay" ] || [ ! -f "$STATE/COMPATIBILITY" ] || [ -L "$STATE/COMPATIBILITY" ] || [ ! -f "$HOOK" ] || [ -L "$HOOK" ]; then
         echo "Existing install state or boot hook is incomplete; refusing update." >&2; exit 1
     fi
@@ -53,141 +87,182 @@ if [ -e "$STATE" ]; then
     if [ ! -f "$STATE/TARGET-SHA256SUMS" ] || [ ! -f "$STATE/BACKUP-SHA256SUMS" ] || [ -L "$STATE/TARGET-SHA256SUMS" ] || [ -L "$STATE/BACKUP-SHA256SUMS" ]; then
         echo "Existing target or backup manifest is missing/unsafe." >&2; exit 1
     fi
+    validate_target_manifest "$STATE/TARGET-SHA256SUMS" 5 || { echo "Existing target manifest is empty, malformed, duplicated, or unsafe." >&2; exit 1; }
+    validate_backup_manifest "$STATE/BACKUP-SHA256SUMS" 5 || { echo "Existing backup manifest is empty, malformed, duplicated, or unsafe." >&2; exit 1; }
     if ! (cd "$STATE/backups" && sha256sum -c "$STATE/BACKUP-SHA256SUMS" >/dev/null); then
         echo "Existing backup manifest does not verify; no update performed." >&2; exit 1
     fi
-    entries=$(awk 'NF { count++ } END { print count + 0 }' "$STATE/TARGET-SHA256SUMS")
-    [ "$entries" -eq 5 ] || { echo "Target manifest does not contain exactly five entries." >&2; exit 1; }
-    count=0
-    for rel in $FILES; do
+    INSTALLED_FILES=$(manifest_paths "$STATE/TARGET-SHA256SUMS")
+    HISTORICAL_FILES=$(backup_original_paths "$STATE/BACKUP-SHA256SUMS")
+    for rel in $INSTALLED_FILES; do
         target=/$rel
-        if [ ! -f "$target" ] || [ -L "$target" ] || [ ! -f "$STATE/backups/$rel" ] || [ -L "$STATE/backups/$rel" ] || [ ! -f "$STATE/overlay/$rel" ] || [ -L "$STATE/overlay/$rel" ]; then
+        if [ ! -f "$target" ] || [ -L "$target" ] || [ ! -f "$STATE/backups/$rel" ] || [ -L "$STATE/backups/$rel" ] || [ ! -f "$STATE/overlay/$rel" ] || [ -L "$STATE/overlay/$rel" ] || ! manifest_has_path "$STATE/BACKUP-SHA256SUMS" "$rel"; then
             echo "Required target, backup, or overlay is missing/unsafe: $target" >&2; exit 1
         fi
-        expected=$(awk -v name="$rel" '$2 == name { count++; value=$1 } END { if (count != 1) exit 1; print value }' "$STATE/TARGET-SHA256SUMS") || {
+        expected=$(manifest_hash "$STATE/TARGET-SHA256SUMS" "$rel") || {
             echo "Target manifest is missing or duplicates $rel." >&2; exit 1;
         }
         actual=$(sha256sum "$STATE/backups/$rel" | awk '{print $1}')
         if [ "$expected" != "$actual" ]; then echo "Captured original hash mismatch: $rel" >&2; exit 1; fi
-        if mount_present "$target"; then count=$((count + 1)); fi
     done
-    if [ -f "$RUN_MARKER" ]; then
-        [ "$count" -eq 5 ] || { echo "Mount marker and live mount list disagree." >&2; exit 1; }
+    if [ -f "$RUN_MARKER" ] && [ ! -L "$RUN_MARKER" ]; then
+        for rel in $INSTALLED_FILES; do
+            mount_present "/$rel" || { echo "Expected overlay mount missing: /$rel" >&2; exit 1; }
+        done
+        for rel in $HISTORICAL_FILES; do
+            if ! contains_path "$INSTALLED_FILES" "$rel" && mount_present "/$rel"; then
+                echo "Unexpected mount remains on retired target: /$rel" >&2; exit 1
+            fi
+        done
+        for rel in $TARGET_FILES; do
+            if ! contains_path "$INSTALLED_FILES" "$rel" && mount_present "/$rel"; then
+                echo "Unexpected mount exists on a new or retired target: /$rel" >&2; exit 1
+            fi
+        done
+    elif [ -e "$RUN_MARKER" ] || [ -L "$RUN_MARKER" ]; then
+        echo "Active marker is unsafe." >&2; exit 1
     else
-        [ "$count" -eq 0 ] || { echo "Mounts exist without the active marker." >&2; exit 1; }
+        for rel in $HISTORICAL_FILES; do
+            mount_present "/$rel" && { echo "Mount exists without the active marker: /$rel" >&2; exit 1; }
+        done
+        for rel in $TARGET_FILES; do
+            mount_present "/$rel" && { echo "Current target is mounted without the active marker: /$rel" >&2; exit 1; }
+        done
         (cd / && sha256sum -c "$STATE/TARGET-SHA256SUMS" >/dev/null) || {
             echo "Live target hashes differ from the captured originals." >&2; exit 1;
         }
     fi
     echo EXISTING
 else
-    if [ -e "$STATE" ] || [ -L "$STATE" ] || [ -e "$HOOK" ] || [ -L "$HOOK" ] || [ -e "$RUN_MARKER" ]; then echo "A state path, hook, or active marker exists without install state." >&2; exit 1; fi
+    if [ -e "$HOOK" ] || [ -L "$HOOK" ] || [ -e "$RUN_MARKER" ] || [ -L "$RUN_MARKER" ]; then echo "A hook or active marker exists without install state." >&2; exit 1; fi
     [ -d /var/lib/webosbrew/init.d ] && command -v run-parts >/dev/null 2>&1 || { echo "Homebrew init.d/run-parts is unavailable." >&2; exit 1; }
-    for rel in $FILES; do
+    for rel in $TARGET_FILES; do
         target=/$rel
         if [ ! -f "$target" ] || [ -L "$target" ]; then echo "Expected regular target missing/unsafe: $target" >&2; exit 1; fi
-        if mount_present "$target"; then echo "Target is already mounted: $target" >&2; exit 1; fi
+        if mount_present "/$rel"; then echo "Current target is already mounted: /$rel" >&2; exit 1; fi
     done
     echo FRESH
 fi
-"#;
-const POSTFLIGHT_SCRIPT: &str = r#"#!/bin/sh
-set -eu
+"#
+);
+const POSTFLIGHT_SCRIPT: &str = remote_script!(
+    r#"
 STATE=/var/lib/webosbrew/black-theme
 HOOK=/var/lib/webosbrew/init.d/50-black-theme
 RUN_MARKER=/run/black-theme-overlay.active
 LOCK=/run/black-theme-overlay.lock
-FILES='
-usr/lib/qml/QuickSettings/Utils/Style.qml
-usr/lib/qml/QuickSettings/Containers/QuickSettingsMainView.qml
-usr/lib/qml/SystemUI/Notification/NotificationStyle.qml
-usr/lib/qml/SystemUI/Notification/Toast.qml
-usr/lib/qml/QuickSettings/Component/BaseControlPanelButton.qml
-'
 if [ "$(id -u)" != 0 ] || [ -e "$LOCK" ] || [ -e /run/black-theme-update.lock ]; then echo "Target is not idle root state." >&2; exit 1; fi
-[ -d "$STATE" ] && [ ! -L "$STATE" ] && [ -d "$STATE/backups" ] && [ ! -L "$STATE/backups" ] || { echo "Install state/backups missing or unsafe." >&2; exit 1; }
+[ -d "$STATE" ] && [ ! -L "$STATE" ] && [ -d "$STATE/backups" ] && [ ! -L "$STATE/backups" ] && [ -d "$STATE/overlay" ] && [ ! -L "$STATE/overlay" ] || { echo "Install state/backups missing or unsafe." >&2; exit 1; }
 [ -f "$HOOK" ] && [ -x "$HOOK" ] && [ ! -L "$HOOK" ] || { echo "Boot hook missing or unsafe." >&2; exit 1; }
 [ -f "$RUN_MARKER" ] && [ ! -L "$RUN_MARKER" ] || { echo "Overlay marker is not active." >&2; exit 1; }
 [ ! -f "$STATE/disabled" ] || { echo "Theme is disabled." >&2; exit 1; }
-[ -f "$STATE/TARGET-SHA256SUMS" ] && [ -f "$STATE/BACKUP-SHA256SUMS" ] || { echo "Target/backup manifest missing." >&2; exit 1; }
+[ -f "$STATE/TARGET-SHA256SUMS" ] && [ ! -L "$STATE/TARGET-SHA256SUMS" ] && [ -f "$STATE/BACKUP-SHA256SUMS" ] && [ ! -L "$STATE/BACKUP-SHA256SUMS" ] || { echo "Target/backup manifest missing or unsafe." >&2; exit 1; }
+validate_target_manifest "$STATE/TARGET-SHA256SUMS" 5 || { echo "Target manifest is empty, malformed, duplicated, or unsafe." >&2; exit 1; }
+validate_backup_manifest "$STATE/BACKUP-SHA256SUMS" 5 || { echo "Backup manifest is empty, malformed, duplicated, or unsafe." >&2; exit 1; }
 (cd "$STATE/backups" && sha256sum -c "$STATE/BACKUP-SHA256SUMS" >/dev/null) || { echo "Backup manifest verification failed." >&2; exit 1; }
-entries=$(awk 'NF { count++ } END { print count + 0 }' "$STATE/TARGET-SHA256SUMS")
-[ "$entries" -eq 5 ] || { echo "Target manifest does not contain exactly five entries." >&2; exit 1; }
-mount_present() { awk -v target="$1" '$2 == target { found=1 } END { exit !found }' /proc/mounts; }
-for rel in $FILES; do
-    [ -f "$STATE/backups/$rel" ] && [ ! -L "$STATE/backups/$rel" ] && [ -f "$STATE/overlay/$rel" ] && [ ! -L "$STATE/overlay/$rel" ] || { echo "Backup/overlay file missing or unsafe: $rel" >&2; exit 1; }
-    expected=$(awk -v name="$rel" '$2 == name { count++; value=$1 } END { if (count != 1) exit 1; print value }' "$STATE/TARGET-SHA256SUMS") || { echo "Target manifest missing or duplicates $rel." >&2; exit 1; }
+INSTALLED_FILES=$(manifest_paths "$STATE/TARGET-SHA256SUMS")
+HISTORICAL_FILES=$(backup_original_paths "$STATE/BACKUP-SHA256SUMS")
+for rel in $INSTALLED_FILES; do
+    [ -f "$STATE/backups/$rel" ] && [ ! -L "$STATE/backups/$rel" ] && [ -f "$STATE/overlay/$rel" ] && [ ! -L "$STATE/overlay/$rel" ] && manifest_has_path "$STATE/BACKUP-SHA256SUMS" "$rel" || { echo "Backup/overlay file missing or unsafe: $rel" >&2; exit 1; }
+    expected=$(manifest_hash "$STATE/TARGET-SHA256SUMS" "$rel") || { echo "Target manifest missing or duplicates $rel." >&2; exit 1; }
     actual=$(sha256sum "$STATE/backups/$rel" | awk '{print $1}')
     [ "$expected" = "$actual" ] || { echo "Captured original hash mismatch: $rel" >&2; exit 1; }
     mount_present "/$rel" || { echo "Expected overlay mount missing: /$rel" >&2; exit 1; }
 done
-echo ACTIVE
-"#;
-
-const FETCH_SCRIPT: &str = r#"#!/bin/sh
-set -eu
-STATE=/var/lib/webosbrew/black-theme
-LOCK=/run/black-theme-overlay.lock
-FILES='
-usr/lib/qml/QuickSettings/Utils/Style.qml
-usr/lib/qml/QuickSettings/Containers/QuickSettingsMainView.qml
-usr/lib/qml/SystemUI/Notification/NotificationStyle.qml
-usr/lib/qml/SystemUI/Notification/Toast.qml
-usr/lib/qml/QuickSettings/Component/BaseControlPanelButton.qml
-'
-if [ "$(id -u)" != 0 ] || [ -e "$LOCK" ] || [ -e /run/black-theme-update.lock ]; then
-    echo "Root or idle target state required to fetch source." >&2; exit 1
-fi
-if [ -d "$STATE" ]; then
-    [ -d "$STATE/backups" ] && [ -f "$STATE/BACKUP-SHA256SUMS" ] || { echo "Existing backups unavailable." >&2; exit 1; }
-    (cd "$STATE/backups" && sha256sum -c "$STATE/BACKUP-SHA256SUMS" >/dev/null) || { echo "Existing backups failed verification." >&2; exit 1; }
-    SOURCE=$STATE/backups
-else
-    SOURCE=/
-fi
-for rel in $FILES; do
-    [ -f "$SOURCE/$rel" ] && [ ! -L "$SOURCE/$rel" ] || { echo "Source file missing/unsafe: $rel" >&2; exit 1; }
+for rel in $HISTORICAL_FILES; do
+    contains_path "$INSTALLED_FILES" "$rel" && continue
+    if mount_present "/$rel"; then echo "Retired target remains mounted: /$rel" >&2; exit 1; fi
 done
-cd "$SOURCE"
-tar -czf - $FILES
-"#;
-
-const REFRESH_SCRIPT: &str = r#"#!/bin/sh
-set -eu
+echo ACTIVE
+"#
+);
+const FETCH_SCRIPT: &str = remote_script!(
+    r#"
 STATE=/var/lib/webosbrew/black-theme
 RUN_MARKER=/run/black-theme-overlay.active
 LOCK=/run/black-theme-overlay.lock
-FILES='
-usr/lib/qml/QuickSettings/Utils/Style.qml
-usr/lib/qml/QuickSettings/Containers/QuickSettingsMainView.qml
-usr/lib/qml/SystemUI/Notification/NotificationStyle.qml
-usr/lib/qml/SystemUI/Notification/Toast.qml
-usr/lib/qml/QuickSettings/Component/BaseControlPanelButton.qml
-'
+if [ "$(id -u)" != 0 ] || [ -e "$LOCK" ] || [ -e /run/black-theme-update.lock ]; then
+    echo "Root or idle target state required to fetch source." >&2; exit 1
+fi
+validate_target_arguments "$@" || { echo "Current target arguments are empty, duplicated, or unsafe." >&2; exit 1; }
+TARGET_FILES=
+for rel do TARGET_FILES="$TARGET_FILES $rel"; done
+if [ -e "$STATE" ] || [ -L "$STATE" ]; then
+    [ -d "$STATE" ] && [ ! -L "$STATE" ] && [ -d "$STATE/backups" ] && [ ! -L "$STATE/backups" ] && [ -f "$STATE/TARGET-SHA256SUMS" ] && [ ! -L "$STATE/TARGET-SHA256SUMS" ] && [ -f "$STATE/BACKUP-SHA256SUMS" ] && [ ! -L "$STATE/BACKUP-SHA256SUMS" ] || { echo "Existing backups unavailable or unsafe." >&2; exit 1; }
+    validate_target_manifest "$STATE/TARGET-SHA256SUMS" 5 || { echo "Existing target manifest is empty, malformed, duplicated, or unsafe." >&2; exit 1; }
+    validate_backup_manifest "$STATE/BACKUP-SHA256SUMS" 5 || { echo "Existing backup manifest is empty, malformed, duplicated, or unsafe." >&2; exit 1; }
+    (cd "$STATE/backups" && sha256sum -c "$STATE/BACKUP-SHA256SUMS" >/dev/null) || { echo "Existing backups failed verification." >&2; exit 1; }
+    INSTALLED_FILES=$(manifest_paths "$STATE/TARGET-SHA256SUMS")
+    HISTORICAL_FILES=$(backup_original_paths "$STATE/BACKUP-SHA256SUMS")
+    for rel in $INSTALLED_FILES; do
+        [ -f "$STATE/backups/$rel" ] && [ ! -L "$STATE/backups/$rel" ] && manifest_has_path "$STATE/BACKUP-SHA256SUMS" "$rel" || { echo "Installed original backup is missing or unsafe: $rel" >&2; exit 1; }
+        expected=$(manifest_hash "$STATE/TARGET-SHA256SUMS" "$rel") || { echo "Installed target manifest is missing or duplicates $rel." >&2; exit 1; }
+        actual=$(sha256sum "$STATE/backups/$rel" | awk '{print $1}')
+        [ "$expected" = "$actual" ] || { echo "Installed captured original hash mismatch: $rel" >&2; exit 1; }
+    done
+HAS_STATE=1
+else
+    if [ -e "$RUN_MARKER" ] || [ -L "$RUN_MARKER" ]; then echo "Active marker exists without install state." >&2; exit 1; fi
+    HAS_STATE=0
+    INSTALLED_FILES=
+    HISTORICAL_FILES=
+fi
+set --
+for rel in $TARGET_FILES; do
+    if [ "$HAS_STATE" -eq 1 ] && contains_path "$HISTORICAL_FILES" "$rel"; then
+        [ -f "$STATE/backups/$rel" ] && [ ! -L "$STATE/backups/$rel" ] || { echo "Retained original backup is missing or unsafe: $rel" >&2; exit 1; }
+        set -- "$@" -C "$STATE/backups" "$rel"
+    else
+        if contains_path "$INSTALLED_FILES" "$rel"; then echo "Installed target has no retained original backup: $rel" >&2; exit 1; fi
+        if mount_present "/$rel"; then echo "New target is already mounted and cannot be fetched live: /$rel" >&2; exit 1; fi
+        [ -f "/$rel" ] && [ ! -L "/$rel" ] || { echo "New live target is missing or unsafe: /$rel" >&2; exit 1; }
+        set -- "$@" -C / "$rel"
+    fi
+done
+tar -czf - "$@"
+"#
+);
+const REFRESH_SCRIPT: &str = remote_script!(
+    r#"
+STATE=/var/lib/webosbrew/black-theme
+RUN_MARKER=/run/black-theme-overlay.active
+LOCK=/run/black-theme-overlay.lock
 if [ "$(id -u)" != 0 ]; then echo "SSH target is not root." >&2; exit 1; fi
 if ! mkdir "$LOCK" 2>/dev/null; then echo "Another theme operation is active." >&2; exit 1; fi
 release_lock() { rmdir "$LOCK" 2>/dev/null || true; }
 trap 'release_lock' 0
 command -v systemctl >/dev/null 2>&1 || { echo "systemctl is unavailable." >&2; exit 1; }
-[ -f "$RUN_MARKER" ] && [ -f "$STATE/TARGET-SHA256SUMS" ] && [ -f "$STATE/BACKUP-SHA256SUMS" ] || { echo "The overlay is not active or manifests are unavailable." >&2; exit 1; }
+[ -d "$STATE" ] && [ ! -L "$STATE" ] && [ -d "$STATE/backups" ] && [ ! -L "$STATE/backups" ] && [ -d "$STATE/overlay" ] && [ ! -L "$STATE/overlay" ] || { echo "Install state/backups missing or unsafe." >&2; exit 1; }
+[ -f "$RUN_MARKER" ] && [ ! -L "$RUN_MARKER" ] && [ -f "$STATE/TARGET-SHA256SUMS" ] && [ ! -L "$STATE/TARGET-SHA256SUMS" ] && [ -f "$STATE/BACKUP-SHA256SUMS" ] && [ ! -L "$STATE/BACKUP-SHA256SUMS" ] || { echo "The overlay is not active or manifests are unavailable." >&2; exit 1; }
+validate_target_manifest "$STATE/TARGET-SHA256SUMS" 5 || { echo "Target manifest is empty, malformed, duplicated, or unsafe." >&2; exit 1; }
+validate_backup_manifest "$STATE/BACKUP-SHA256SUMS" 5 || { echo "Backup manifest is empty, malformed, duplicated, or unsafe." >&2; exit 1; }
 (cd "$STATE/backups" && sha256sum -c "$STATE/BACKUP-SHA256SUMS" >/dev/null) || { echo "Backup manifest verification failed." >&2; exit 1; }
-entries=$(awk 'NF { count++ } END { print count + 0 }' "$STATE/TARGET-SHA256SUMS")
-[ "$entries" -eq 5 ] || { echo "Target manifest does not contain exactly five entries." >&2; exit 1; }
-mount_present() { awk -v target="$1" '$2 == target { found=1 } END { exit !found }' /proc/mounts; }
-for rel in $FILES; do
-    expected=$(awk -v name="$rel" '$2 == name { count++; value=$1 } END { if (count != 1) exit 1; print value }' "$STATE/TARGET-SHA256SUMS") || { echo "Target manifest missing or duplicates $rel." >&2; exit 1; }
+INSTALLED_FILES=$(manifest_paths "$STATE/TARGET-SHA256SUMS")
+HISTORICAL_FILES=$(backup_original_paths "$STATE/BACKUP-SHA256SUMS")
+for rel in $INSTALLED_FILES; do
+    [ -f "$STATE/backups/$rel" ] && [ ! -L "$STATE/backups/$rel" ] && [ -f "$STATE/overlay/$rel" ] && [ ! -L "$STATE/overlay/$rel" ] && manifest_has_path "$STATE/BACKUP-SHA256SUMS" "$rel" || { echo "Backup/overlay file missing or unsafe: $rel" >&2; exit 1; }
+    expected=$(manifest_hash "$STATE/TARGET-SHA256SUMS" "$rel") || { echo "Target manifest missing or duplicates $rel." >&2; exit 1; }
     actual=$(sha256sum "$STATE/backups/$rel" | awk '{print $1}')
     [ "$expected" = "$actual" ] || { echo "Captured original hash mismatch: $rel" >&2; exit 1; }
     mount_present "/$rel" || { echo "Expected overlay mount missing: /$rel" >&2; exit 1; }
 done
+for rel in $HISTORICAL_FILES; do
+    contains_path "$INSTALLED_FILES" "$rel" && continue
+    if mount_present "/$rel"; then echo "Retired target remains mounted: /$rel" >&2; exit 1; fi
+done
 systemctl restart surface-manager-daemon.service
 systemctl is-active --quiet surface-manager-daemon.service || { echo "Display service did not return to active state." >&2; exit 1; }
-[ -f "$RUN_MARKER" ] || { echo "Overlay marker missing after display refresh." >&2; exit 1; }
-for rel in $FILES; do
+[ -f "$RUN_MARKER" ] && [ ! -L "$RUN_MARKER" ] || { echo "Overlay marker missing after display refresh." >&2; exit 1; }
+for rel in $INSTALLED_FILES; do
     mount_present "/$rel" || { echo "Overlay mount missing after display refresh: /$rel" >&2; exit 1; }
 done
-echo "surface-manager-daemon.service restarted; all five overlay mounts remain active."
-"#;
+for rel in $HISTORICAL_FILES; do
+    contains_path "$INSTALLED_FILES" "$rel" && continue
+    if mount_present "/$rel"; then echo "Retired target mounted after display refresh: /$rel" >&2; exit 1; fi
+done
+echo "surface-manager-daemon.service restarted; all target overlay mounts remain active."
+"#
+);
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum InstallMode {
@@ -410,10 +485,19 @@ pub fn manual_report_for(
     )
 }
 
+fn target_script_command() -> String {
+    let arguments = TARGETS
+        .iter()
+        .map(|target| format!("'{}'", target.replace('\'', "'\\''")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("sh -s -- {arguments}")
+}
+
 fn preflight(config: &UserConfig) -> Result<InstallMode, DeployError> {
     let output = ssh_input(
         config,
-        "sh -s",
+        &target_script_command(),
         PREFLIGHT_SCRIPT.as_bytes(),
         "device preflight",
     )?;
@@ -428,7 +512,12 @@ fn preflight(config: &UserConfig) -> Result<InstallMode, DeployError> {
 }
 
 fn fetch_sources(config: &UserConfig) -> Result<Vec<u8>, DeployError> {
-    let output = ssh_input(config, "sh -s", FETCH_SCRIPT.as_bytes(), "QML source fetch")?;
+    let output = ssh_input(
+        config,
+        &target_script_command(),
+        FETCH_SCRIPT.as_bytes(),
+        "QML source fetch",
+    )?;
     Ok(output.stdout)
 }
 
@@ -478,9 +567,10 @@ fn decode_source_archive(bytes: &[u8]) -> Result<BTreeMap<String, String>, Deplo
         }
     }
     if sources.len() != TARGETS.len() {
-        return Err(DeployError::InvalidArchive(
-            "archive must contain each of the five target files exactly once".into(),
-        ));
+        return Err(DeployError::InvalidArchive(format!(
+            "archive must contain each of the {} target files exactly once",
+            TARGETS.len()
+        )));
     }
     Ok(sources)
 }
@@ -505,19 +595,51 @@ fn make_diff(sources: &BTreeMap<String, String>, patched: &BTreeMap<String, Stri
     output
 }
 
+const MANIFEST_FUNCTIONS_MARKER: &str = "# @include-manifest-functions@";
+const MANIFEST_FUNCTIONS: &str = include_str!("../preview/manifest-functions.sh");
+
+fn embed_manifest_functions(script: &str) -> Result<Vec<u8>, DeployError> {
+    let Some((prefix, suffix)) = script.split_once(MANIFEST_FUNCTIONS_MARKER) else {
+        return Err(DeployError::Bundle(
+            "preview script is missing the shared manifest functions marker".into(),
+        ));
+    };
+    if suffix.contains(MANIFEST_FUNCTIONS_MARKER) {
+        return Err(DeployError::Bundle(
+            "preview script contains multiple shared manifest functions markers".into(),
+        ));
+    }
+
+    let mut embedded =
+        String::with_capacity(prefix.len() + MANIFEST_FUNCTIONS.len() + suffix.len());
+    embedded.push_str(prefix);
+    embedded.push_str(MANIFEST_FUNCTIONS);
+    embedded.push_str(suffix);
+    Ok(embedded.into_bytes())
+}
+
 fn build_bundle(config: &UserConfig, plan: &DeploymentPlan) -> Result<Vec<u8>, DeployError> {
     let mut files = BTreeMap::<String, (Vec<u8>, u32)>::new();
     files.insert(
         "install.sh".into(),
-        (include_bytes!("../preview/install.sh").to_vec(), 0o755),
+        (
+            embed_manifest_functions(include_str!("../preview/install.sh"))?,
+            0o755,
+        ),
     );
     files.insert(
         "apply.sh".into(),
-        (include_bytes!("../preview/apply.sh").to_vec(), 0o755),
+        (
+            embed_manifest_functions(include_str!("../preview/apply.sh"))?,
+            0o755,
+        ),
     );
     files.insert(
         "unmount.sh".into(),
-        (include_bytes!("../preview/unmount.sh").to_vec(), 0o755),
+        (
+            embed_manifest_functions(include_str!("../preview/unmount.sh"))?,
+            0o755,
+        ),
     );
     files.insert(
         "uninstall.sh".into(),
@@ -525,7 +647,10 @@ fn build_bundle(config: &UserConfig, plan: &DeploymentPlan) -> Result<Vec<u8>, D
     );
     files.insert(
         "update.sh".into(),
-        (include_bytes!("../preview/update.sh").to_vec(), 0o755),
+        (
+            embed_manifest_functions(include_str!("../preview/update.sh"))?,
+            0o755,
+        ),
     );
     files.insert(
         "TARGET-SHA256SUMS".into(),
@@ -596,9 +721,10 @@ fn compatibility_file(config: &UserConfig, plan: &DeploymentPlan) -> String {
         "Compatibility: {}\n",
         plan.compatibility_warning()
     ));
-    output.push_str(
-        "Structural checks: all 19 patch sites matched on fetched source.\nSelected patches:\n",
-    );
+    output.push_str(&format!(
+        "Structural checks: all {} patch sites matched on fetched source.\nSelected patches:\n",
+        PATCHES.len()
+    ));
     for id in &plan.selected_ids {
         if let Some(patch) = PATCHES.iter().find(|patch| patch.id == id) {
             output.push_str(&format!("{} — {}\n", patch.id, patch.label));
@@ -918,6 +1044,117 @@ mod tests {
     use super::*;
 
     #[test]
+    fn target_script_command_passes_every_declared_target() {
+        let arguments = TARGETS
+            .iter()
+            .map(|target| format!("'{target}'"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(target_script_command(), format!("sh -s -- {arguments}"));
+    }
+
+    fn manifest_validator_script(source: &str, minimum_depth: u8) -> String {
+        let start_marker = "# BEGIN shared manifest functions";
+        let end_marker = "# END shared manifest functions";
+        let start = source
+            .find(start_marker)
+            .expect("script must embed the shared manifest functions");
+        let end = source[start..]
+            .find(end_marker)
+            .map(|offset| start + offset + end_marker.len())
+            .expect("shared manifest functions must have an end marker");
+        let invocation = if minimum_depth == 4 {
+            "validate_backup_manifest \"$1\"".to_owned()
+        } else {
+            format!("validate_backup_manifest \"$1\" {minimum_depth}")
+        };
+        format!("{}\n{invocation}\n", &source[start..end])
+    }
+
+    fn assert_backup_manifest_validator(source: &str, minimum_depth: u8, target: &str) {
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::current_dir()
+            .unwrap()
+            .join(".build")
+            .join(format!(
+                "shared-backup-manifest-{}-{nonce}",
+                std::process::id()
+            ));
+        std::fs::create_dir_all(&root).unwrap();
+        let _cleanup = Cleanup(root.clone());
+        let manifest = root.join("BACKUP-SHA256SUMS");
+        let hash = "0".repeat(64);
+        let script = manifest_validator_script(source, minimum_depth);
+        std::fs::write(
+            &manifest,
+            format!("{hash}  {target}\n{hash}  pre-update-20261111-1234/overlay/{target}\n"),
+        )
+        .unwrap();
+        let validate = || {
+            Command::new("/bin/sh")
+                .arg("-c")
+                .arg(&script)
+                .arg("validate_backup_manifest")
+                .arg(&manifest)
+                .output()
+                .unwrap()
+        };
+        let output = validate();
+        assert!(
+            output.status.success(),
+            "valid pre-update backup path rejected: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        std::fs::write(
+            &manifest,
+            format!(
+                "{hash}  {target}\n{hash}  pre-update-20261111-1234/overlay/usr/lib/qml/../Legacy.qml\n"
+            ),
+        )
+        .unwrap();
+        let output = validate();
+        assert!(
+            !output.status.success(),
+            "traversal path unexpectedly accepted"
+        );
+
+        if minimum_depth == 5 {
+            std::fs::write(
+                &manifest,
+                format!(
+                    "{hash}  usr/lib/qml/Legacy.qml\n{hash}  pre-update-20261111-1234/overlay/usr/lib/qml/Legacy.qml\n"
+                ),
+            )
+            .unwrap();
+            let output = validate();
+            assert!(
+                !output.status.success(),
+                "remote policy unexpectedly accepted a depth-four QML path"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_shared_backup_manifest_validator_preserves_remote_path_policy() {
+        assert_backup_manifest_validator(
+            PREFLIGHT_SCRIPT,
+            5,
+            "usr/lib/qml/QuickSettings/Legacy.qml",
+        );
+    }
+
+    #[test]
     fn askpass_helper_creates_a_private_directory_on_first_use() {
         let root = std::env::current_dir()
             .unwrap()
@@ -1029,7 +1266,7 @@ mod tests {
         ));
 
         let mut extra = entries;
-        extra.push(("unexpected.qml", "Item {}\\n"));
+        extra.push(("usr/lib/qml/SystemUI/Notification/Toast.qml", "Item {}\\n"));
         let extra = source_archive(&extra);
         assert!(matches!(
             decode_source_archive(&extra),
