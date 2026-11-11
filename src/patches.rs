@@ -4,40 +4,29 @@ pub const TARGETS: [&str; 2] = [
 ];
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum ScopeStep {
-    PropertyObject(&'static str),
-    Member(&'static str),
-    ChildObjectWithProperty {
-        class: &'static str,
-        property: &'static str,
-        expected: &'static str,
-    },
+pub(crate) struct ChildObjectScope {
+    pub(crate) class: &'static str,
+    pub(crate) property: &'static str,
+    pub(crate) expected: &'static str,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PatchRule {
     Scalar {
         root_id: &'static str,
-        scope: &'static [ScopeStep],
+        scope: Option<ChildObjectScope>,
         property: &'static str,
         expected: &'static str,
         replacement: &'static str,
     },
     ExpressionLiterals {
         root_id: &'static str,
-        scope: &'static [ScopeStep],
         property: &'static str,
         expected_literal: &'static str,
         expected_count: usize,
         required_identifiers: &'static [&'static str],
         required_operators: &'static [&'static str],
         replacement: &'static str,
-    },
-    TokenSequence {
-        expected: &'static str,
-        replacement: &'static str,
-        not_found: &'static str,
-        ambiguous: &'static str,
     },
 }
 
@@ -49,17 +38,17 @@ pub struct PatchSpec {
     pub target: &'static str,
 }
 
-const MAIN_PANEL_SCOPE: &[ScopeStep] = &[ScopeStep::ChildObjectWithProperty {
+const MAIN_PANEL_CHILD: ChildObjectScope = ChildObjectScope {
     class: "Rectangle",
     property: "visible",
     expected: "interfaces.systemInfo.checkBackGround",
-}];
+};
 
 pub const PATCHES: [PatchSpec; 6] = [
     PatchSpec {
         rule: PatchRule::Scalar {
             root_id: "mainLayout",
-            scope: MAIN_PANEL_SCOPE,
+            scope: Some(MAIN_PANEL_CHILD),
             property: "color",
             expected: "\"#323941\"",
             replacement: "\"#000000\"",
@@ -71,7 +60,7 @@ pub const PATCHES: [PatchSpec; 6] = [
     PatchSpec {
         rule: PatchRule::Scalar {
             root_id: "mainLayout",
-            scope: MAIN_PANEL_SCOPE,
+            scope: Some(MAIN_PANEL_CHILD),
             property: "opacity",
             expected: "0.95",
             replacement: "1.0",
@@ -83,7 +72,7 @@ pub const PATCHES: [PatchSpec; 6] = [
     PatchSpec {
         rule: PatchRule::Scalar {
             root_id: "mainLayout",
-            scope: MAIN_PANEL_SCOPE,
+            scope: Some(MAIN_PANEL_CHILD),
             property: "visible",
             expected: "interfaces.systemInfo.checkBackGround",
             replacement: "false",
@@ -95,7 +84,7 @@ pub const PATCHES: [PatchSpec; 6] = [
     PatchSpec {
         rule: PatchRule::Scalar {
             root_id: "menuPopupBg",
-            scope: &[],
+            scope: None,
             property: "color",
             expected: "\"#2E3741\"",
             replacement: "\"#000000\"",
@@ -107,7 +96,7 @@ pub const PATCHES: [PatchSpec; 6] = [
     PatchSpec {
         rule: PatchRule::Scalar {
             root_id: "root",
-            scope: &[],
+            scope: None,
             property: "bgColor",
             expected: "\"#575E66\"",
             replacement: "\"#000000\"",
@@ -119,7 +108,6 @@ pub const PATCHES: [PatchSpec; 6] = [
     PatchSpec {
         rule: PatchRule::ExpressionLiterals {
             root_id: "background",
-            scope: &[],
             property: "color",
             expected_literal: "\"#575E66\"",
             expected_count: 2,

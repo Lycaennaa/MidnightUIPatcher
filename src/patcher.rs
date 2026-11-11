@@ -3,7 +3,7 @@ use std::ops::Range;
 
 use thiserror::Error;
 
-use crate::patches::{PATCHES, PatchRule, PatchSpec, ScopeStep, TARGETS};
+use crate::patches::{PATCHES, PatchRule, PatchSpec, TARGETS};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PatchError {
@@ -215,59 +215,6 @@ impl<'a> QmlDoc<'a> {
                 detail: format!("property {name} is ambiguous"),
             }),
         }
-    }
-
-    fn property_object(&self, scope: usize, name: &str, file: &str) -> Result<usize, PatchError> {
-        let Some(close) = self.matching[scope] else {
-            return Err(unsupported(file, "missing object end"));
-        };
-        let mut found = Vec::new();
-        for i in scope + 1..close {
-            if self.container[i] != Some(scope)
-                || !self.token_eq(i, name)
-                || !self.token_eq(i + 1, ":")
-            {
-                continue;
-            }
-            if i < 2 || !self.token_eq(i - 2, "property") {
-                continue;
-            }
-            let mut value = i + 2;
-            while value < close && self.token_eq(value, "(") {
-                value += 1;
-            }
-            if self.token_eq(value, "QtObject") && self.token_eq(value + 1, "{") {
-                value += 1;
-            }
-            if self.token_eq(value, "{") {
-                found.push(value);
-            }
-        }
-        match found.as_slice() {
-            [one] => Ok(*one),
-            [] => Err(unsupported(
-                file,
-                &format!("QML object property {name} not found"),
-            )),
-            _ => Err(unsupported(
-                file,
-                &format!("QML object property {name} is ambiguous"),
-            )),
-        }
-    }
-
-    fn object_member(&self, scope: usize, name: &str, file: &str) -> Result<usize, PatchError> {
-        let (_, value) = self
-            .direct_member(scope, name)
-            .map_err(|e| refile(e, file))?;
-        let mut index = value;
-        while self.token_eq(index, "(") {
-            index += 1;
-        }
-        if !self.token_eq(index, "{") {
-            return Err(unsupported(file, &format!("{name} is not an object")));
-        }
-        Ok(index)
     }
 
     fn object_by_id(&self, id: &str, file: &str) -> Result<usize, PatchError> {
@@ -613,27 +560,6 @@ fn scalar_edit(
     }])
 }
 
-fn resolve_scope(
-    doc: &QmlDoc<'_>,
-    root_id: &str,
-    scope_steps: &[ScopeStep],
-    file: &str,
-) -> Result<usize, PatchError> {
-    let mut scope = doc.object_by_id(root_id, file)?;
-    for step in scope_steps {
-        scope = match *step {
-            ScopeStep::PropertyObject(name) => doc.property_object(scope, name, file)?,
-            ScopeStep::Member(name) => doc.object_member(scope, name, file)?,
-            ScopeStep::ChildObjectWithProperty {
-                class,
-                property,
-                expected,
-            } => doc.child_object_with_property(scope, class, property, expected, file)?,
-        };
-    }
-    Ok(scope)
-}
-
 fn locate_patch(doc: &QmlDoc<'_>, rule: PatchRule, file: &str) -> Result<Vec<Edit>, PatchError> {
     match rule {
         PatchRule::Scalar {
@@ -643,12 +569,21 @@ fn locate_patch(doc: &QmlDoc<'_>, rule: PatchRule, file: &str) -> Result<Vec<Edi
             expected,
             replacement,
         } => {
-            let scope = resolve_scope(doc, root_id, scope, file)?;
+            let root = doc.object_by_id(root_id, file)?;
+            let scope = match scope {
+                Some(scope) => doc.child_object_with_property(
+                    root,
+                    scope.class,
+                    scope.property,
+                    scope.expected,
+                    file,
+                )?,
+                None => root,
+            };
             scalar_edit(doc, scope, property, expected, replacement, file)
         }
         PatchRule::ExpressionLiterals {
             root_id,
-            scope,
             property,
             expected_literal,
             expected_count,
@@ -656,7 +591,7 @@ fn locate_patch(doc: &QmlDoc<'_>, rule: PatchRule, file: &str) -> Result<Vec<Edi
             required_operators,
             replacement,
         } => {
-            let scope = resolve_scope(doc, root_id, scope, file)?;
+            let scope = doc.object_by_id(root_id, file)?;
             let spans = doc.expression_literal_spans(
                 scope,
                 property,
@@ -674,40 +609,6 @@ fn locate_patch(doc: &QmlDoc<'_>, rule: PatchRule, file: &str) -> Result<Vec<Edi
                     replacement: replacement.to_owned(),
                 })
                 .collect())
-        }
-        PatchRule::TokenSequence {
-            expected,
-            replacement,
-            not_found,
-            ambiguous,
-        } => {
-            let expected_tokens = lex_fragment(expected);
-            let mut matches = Vec::new();
-            for start in 0..doc.tokens.len() {
-                let end = start + expected_tokens.len();
-                if end <= doc.tokens.len()
-                    && doc.token_sequence(start, end)
-                        == expected_tokens
-                            .iter()
-                            .map(String::as_str)
-                            .collect::<Vec<_>>()
-                {
-                    matches.push(start..end);
-                }
-            }
-            match matches.as_slice() {
-                [range] => {
-                    let first = &doc.tokens[range.start];
-                    let last = &doc.tokens[range.end - 1];
-                    Ok(vec![Edit {
-                        start: first.start,
-                        end: last.end,
-                        replacement: replacement.to_owned(),
-                    }])
-                }
-                [] => Err(unsupported(file, not_found)),
-                _ => Err(unsupported(file, ambiguous)),
-            }
         }
     }
 }
@@ -732,6 +633,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::patches::ChildObjectScope;
 
     #[test]
     fn tokenizer_ignores_comment_and_string_delimiters() {
@@ -755,80 +657,45 @@ mod tests {
     }
 
     #[test]
-    fn patches_one_scoped_object_without_touching_identical_sibling() {
-        let input = r##"Item {
-            property var first: ({ AREA: { COLOR: "#112233" } })
-            property var second: ({ AREA: { COLOR: "#112233" } })
-        }"##;
-        let doc = QmlDoc::parse(input, "fixture.qml").unwrap();
-        let brace = doc
-            .tokens
-            .iter()
-            .enumerate()
-            .find(|(index, _)| doc.text(*index) == "{")
-            .unwrap()
-            .0;
-        let first = doc.property_object(brace, "first", "fixture.qml").unwrap();
-        let area = doc.object_member(first, "AREA", "fixture.qml").unwrap();
-        let edit = scalar_edit(
-            &doc,
-            area,
-            "COLOR",
-            "\"#112233\"",
-            "\"#000000\"",
-            "fixture.qml",
-        )
-        .unwrap()
-        .remove(0);
-        let mut output = input.to_owned();
-        output.replace_range(edit.start..edit.end, &edit.replacement);
-        assert!(output.contains("first: ({ AREA: { COLOR: \"#000000\" } })"));
-        assert!(output.contains("second: ({ AREA: { COLOR: \"#112233\" } })"));
-    }
-
-    #[test]
-    fn declarative_rule_applies_only_to_its_scoped_value_and_rejects_drift() {
-        const SCOPE: &[ScopeStep] = &[
-            ScopeStep::PropertyObject("nested"),
-            ScopeStep::Member("outer"),
-            ScopeStep::Member("inner"),
-        ];
+    fn scalar_rule_targets_unique_child_object_by_property() {
         const RULE: PatchRule = PatchRule::Scalar {
             root_id: "fixtureRoot",
-            scope: SCOPE,
+            scope: Some(ChildObjectScope {
+                class: "Rectangle",
+                property: "visible",
+                expected: "isBackdrop",
+            }),
             property: "color",
             expected: "\"#112233\"",
             replacement: "\"#000000\"",
         };
         let input = r##"Item {
             id: fixtureRoot
-            property var nested: ({
-                outer: { inner: { color: "#112233" } },
-                sibling: { color: "#112233" }
-            })
+            Rectangle { visible: isBackdrop; color: "#112233" }
+            Rectangle { visible: false; color: "#112233" }
         }"##;
 
         let doc = QmlDoc::parse(input, "fixture.qml").unwrap();
         let edit = locate_patch(&doc, RULE, "fixture.qml").unwrap().remove(0);
         let mut output = input.to_owned();
         output.replace_range(edit.start..edit.end, &edit.replacement);
-        assert!(output.contains("inner: { color: \"#000000\" }"));
-        assert!(output.contains("sibling: { color: \"#112233\" }"));
+        assert!(output.contains("visible: isBackdrop; color: \"#000000\""));
+        assert!(output.contains("visible: false; color: \"#112233\""));
 
-        let drifted = input.replace(
-            "inner: { color: \"#112233\" }",
-            "inner: { color: \"#445566\" }",
-        );
-        let doc = QmlDoc::parse(&drifted, "fixture.qml").unwrap();
-        assert!(matches!(
-            locate_patch(&doc, RULE, "fixture.qml"),
-            Err(PatchError::Unsupported { .. })
-        ));
+        for ambiguous in [
+            input.replace("visible: false", "visible: isBackdrop"),
+            input.replace("visible: isBackdrop", "visible: isDialog"),
+        ] {
+            let doc = QmlDoc::parse(&ambiguous, "fixture.qml").unwrap();
+            assert!(matches!(
+                locate_patch(&doc, RULE, "fixture.qml"),
+                Err(PatchError::Unsupported { .. })
+            ));
+        }
     }
 
     #[test]
     fn unselected_patch_sites_are_still_validated() {
-        const SCOPE: &[ScopeStep] = &[];
         let input = r##"Item { id: fixtureRoot; color: "#112233" }"##;
         let doc = QmlDoc::parse(input, "fixture.qml").unwrap();
         let docs = BTreeMap::from([("fixture.qml".to_owned(), doc)]);
@@ -836,7 +703,7 @@ mod tests {
             PatchSpec {
                 rule: PatchRule::Scalar {
                     root_id: "fixtureRoot",
-                    scope: SCOPE,
+                    scope: None,
                     property: "color",
                     expected: "\"#112233\"",
                     replacement: "\"#000000\"",
@@ -848,7 +715,7 @@ mod tests {
             PatchSpec {
                 rule: PatchRule::Scalar {
                     root_id: "fixtureRoot",
-                    scope: SCOPE,
+                    scope: None,
                     property: "color",
                     expected: "\"#445566\"",
                     replacement: "\"#000000\"",
