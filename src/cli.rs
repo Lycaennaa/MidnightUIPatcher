@@ -13,7 +13,7 @@ use midnight_ui_patcher::deploy::{self, DeploymentPlan};
 use midnight_ui_patcher::patcher::{PatchError, patch_qml, selected_patch_ids};
 use midnight_ui_patcher::patches::{PATCHES, TARGETS};
 
-const DEPLOY_SUCCESS: &str = "Installed/updated; five mounts and backup manifest verified";
+const DEPLOY_SUCCESS: &str = "Installed/updated; two mounts and backup manifest verified";
 const DEPLOY_REFRESH_PENDING: &str = "Pending owner approval";
 
 #[derive(Debug, Parser)]
@@ -144,7 +144,7 @@ enum DeviceCommand {
     Apply(ApplyArgs),
     /// Restart the display service after confirming it may interrupt the TV UI.
     #[command(
-        after_help = "The remote script verifies the active overlay, backups, and all five mounts before restarting surface-manager-daemon.service. The TV UI may be interrupted."
+        after_help = "The remote script verifies the active overlay, backup manifest, both mounts, and that retired target paths remain unmounted before restarting surface-manager-daemon.service. The TV UI may be interrupted."
     )]
     RestartDisplay(RestartDisplayArgs),
 }
@@ -612,7 +612,7 @@ fn apply(args: ApplyArgs, config_path: Option<&Path>) -> Result<CommandResult, C
             data["display_refresh"] = json!("pending_owner_approval");
             data["report"] = json!(report);
             let text = format!(
-                "{summary}Deployment succeeded; five mounts and the backup manifest verified.\nDisplay refresh is still pending separate owner approval.\n\n{report}"
+                "{summary}Deployment succeeded; both mounts and the backup manifest verified.\nDisplay refresh is still pending separate owner approval.\n\n{report}"
             );
             Ok(CommandResult { text, data })
         }
@@ -640,7 +640,7 @@ fn restart_display(
     let (_, settings) = load_settings(config_path)?;
     deploy::restart_display_service(&settings, true).map_err(deploy_failure)?;
     Ok(CommandResult {
-        text: "Display service restarted; all five overlay mounts remain active. Check Quick Settings visually on the TV.\n".to_owned(),
+        text: "Display service restarted; both overlay mounts remain active and retired target paths remain unmounted. Check Quick Settings visually on the TV.\n".to_owned(),
         data: json!({
             "display_refresh": "restarted",
             "visual_check": "pending_owner_visual_check",
@@ -1028,9 +1028,9 @@ mod tests {
         assert!(result.text.contains("Model: OLED55"));
         assert!(result.text.contains("- Set panel backdrop color to black"));
         assert!(
-            result.text.contains(
-                "Deployment: Installed/updated; five mounts and backup manifest verified"
-            )
+            result
+                .text
+                .contains("Deployment: Installed/updated; two mounts and backup manifest verified")
         );
         assert!(
             result

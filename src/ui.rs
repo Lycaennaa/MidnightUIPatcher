@@ -10,9 +10,9 @@ use gpui::{
 
 use crate::config::{self, UserConfig};
 use crate::deploy::{self, DeploymentPlan};
-use crate::patches::{PATCHES, PatchSpec};
+use crate::patches::{PATCHES, PatchSpec, TARGETS};
 use crate::text_input::{self, LineInput};
-const DEPLOY_SUCCESS: &str = "Installed/updated; five mounts and backup manifest verified";
+const DEPLOY_SUCCESS: &str = "Installed/updated; two mounts and backup manifest verified";
 
 pub fn run(config_path: Option<PathBuf>) {
     Application::new().run(move |cx: &mut App| {
@@ -253,7 +253,10 @@ impl AppView {
         self.confirm_refresh = false;
         self.error = None;
         self.busy = true;
-        self.status = "Checking the live hook, lock, mounts, hashes, and backups; fetching the five QML files over root SSH…".into();
+        self.status = format!(
+            "Checking the live hook, lock, mounts, hashes, and backups; fetching {} QML files over root SSH…",
+            TARGETS.len()
+        );
         cx.notify();
         cx.spawn(async move |weak, async_cx| {
             let result = async_cx.background_spawn(async move {
@@ -264,7 +267,8 @@ impl AppView {
                 match result {
                     Ok(plan) => {
                         this.status = format!(
-                            "Fetched five target files. All {} patch sites matched. Review the summary and optional diff before applying.",
+                            "Fetched {} target files. All {} patch sites matched. Review the summary and optional diff before applying.",
+                            TARGETS.len(),
                             plan.structurally_verified,
                         );
                         this.deployment_status = "Not applied".into();
@@ -322,7 +326,7 @@ impl AppView {
                 this.busy = false;
                 match result {
                     Ok(()) => {
-                        this.status = "Deployment succeeded. The live marker, five mounts, original hashes, and backup manifest verified; display refresh is still pending.".into();
+                        this.status = "Deployment succeeded. Both overlay mounts are active, retired targets are unmounted, and original hashes plus the backup manifest verified; display refresh is still pending.".into();
                         this.deployment_status = DEPLOY_SUCCESS.into();
                         this.refresh_status = "Pending owner approval".into();
                         this.confirm_refresh = false;
@@ -362,7 +366,7 @@ impl AppView {
                 this.busy = false;
                 match result {
                     Ok(()) => {
-                        this.status = "Display service restarted and all five overlay mounts remain active. Check Quick Settings visually on the TV.".into();
+                        this.status = "Display service restarted; both overlay mounts remain active and retired target paths remain unmounted. Check Quick Settings visually on the TV.".into();
                         this.refresh_status = "Restarted; owner visual check pending".into();
                     }
                     Err(error) => {
@@ -486,7 +490,7 @@ impl Render for AppView {
                             this.deployment_status = "Not applied".into();
                             this.refresh_status = "Not restarted".into();
                             this.visual_result = "Not checked".into();
-                            this.status = "All 19 edits selected. Inspect the TV to validate the current source.".into();
+                            this.status = format!("All {} edits selected. Inspect the TV to validate the current source.", PATCHES.len());
                             cx.notify();
                         }))
                         .child("Select all"),
@@ -518,7 +522,7 @@ impl Render for AppView {
                     div().flex().flex_col().gap_2().p_3().bg(rgb(0x202a24)).rounded_md()
                         .child(div().text_lg().font_weight(gpui::FontWeight::BOLD).child("Pre-install summary"))
                         .child(div().child(format!("Action: {}", plan.mode.label())))
-                        .child(div().child(format!("Source check: all five fetched files parsed; all {} structural patch sites matched.", plan.structurally_verified)))
+                        .child(div().child(format!("Source check: all {} fetched files parsed; all {} structural patch sites matched.", TARGETS.len(), plan.structurally_verified)))
                         .child(div().child(format!("Selected edits:\n{selected_list}")))
                         .child(div().text_color(rgb(0xf0d28a)).child(plan.compatibility_warning()))
                         .child(div().text_sm().text_color(rgb(0xb7bbc2)).child("Apply preserves the original backups and current overlay. It updates state under /var/lib/webosbrew and creates/removes bind mounts; it does not overwrite QML files in /usr or flash firmware. The service refresh is a separate action."))

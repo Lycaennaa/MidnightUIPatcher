@@ -24,7 +24,7 @@ cargo run -- --format json device inspect
 Replace `my-tv` with an alias configured in the selected OpenSSH config.
 Use `--ssh-config-file PATH` when the alias is in a non-default OpenSSH config; blank uses OpenSSH's default config.
 
-Inspection is read-only: it checks the live hook, lock, mounts, hashes, and backups, fetches the five QML files over root SSH, and validates every known patch site. Review the summary and fingerprint; add `--diff` to explicitly include the raw QML diff. All edits are selected by default. Repeat `--patch ID` to select specific edits or use `--exclude ID` to omit edits.
+Inspection is read-only: it checks the live hook, lock, mounts, hashes, and backups, fetches the two Quick Settings QML files over root SSH, and validates every known patch site. Review the summary and fingerprint; add `--diff` to explicitly include the raw QML diff. All edits are selected by default. Repeat `--patch ID` to select specific edits or use `--exclude ID` to omit edits.
 
 Apply re-inspects the TV and refuses to deploy if the source, selection, connection settings, or resulting plan differs from the reviewed fingerprint. Replace the placeholder with `plan_fingerprint` from inspection:
 
@@ -36,7 +36,7 @@ The unverified-firmware acknowledgement is required when firmware is not maintai
 
 ```sh
 cargo run -- device restart-display --confirm-owner-approval
-cargo run -- report --structurally-verified 19 --deployment succeeded --refresh restarted-visual-check-pending --visual-result looks-good
+cargo run -- report --structurally-verified 6 --deployment succeeded --refresh restarted-visual-check-pending --visual-result looks-good
 ```
 
 Text mode writes results to stdout and errors to stderr. `--format json` writes one JSON object to stdout for success, operation errors, and usage errors. Exit codes are 0 for success, 1 for an operation failure, and 2 for invalid or blocked commands. The visual result is an owner-provided observation, not automated verification.
@@ -46,6 +46,8 @@ Text mode writes results to stdout and errors to stderr. `--format json` writes 
 Select edits and inspect the TV. Review the pre-install summary and optional raw diff. Structurally compatible but unverified firmware requires an explicit warning confirmation. Applying also requires confirming root SSH recovery is available.
 
 The theme updates state in `/var/lib/webosbrew`; it does not write QML files into `/usr`, flash firmware, or install an IPK. A display-service restart can interrupt the TV UI. Visually check Quick Settings after a refresh; successful deployment is not visual verification.
+
+Existing five-target installations migrate in place to the two Quick Settings targets. The update removes and verifies the three retired mounts while retaining original and pre-update backups.
 
 Patch selections are independent. Missing, duplicate, or unexpected matches remain hard failures.
 

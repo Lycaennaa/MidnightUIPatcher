@@ -1311,13 +1311,24 @@ mod tests {
             assert!(files.insert(path, contents).is_none());
         }
         let manifest = String::from_utf8(files.remove("SHA256SUMS").unwrap()).unwrap();
-        assert_eq!(files.len(), 12);
+        assert_eq!(files.len(), 7 + TARGETS.len());
         for line in manifest.lines() {
             let (expected, path) = line.split_once("  ").unwrap();
             assert_eq!(sha256(files.get(path).unwrap()), expected);
         }
         assert_eq!(manifest.lines().count(), files.len());
         assert!(files.keys().all(|path| !path.starts_with("base/")));
+        for script_name in ["install.sh", "apply.sh", "unmount.sh", "update.sh"] {
+            let bundled_script = std::str::from_utf8(files.get(script_name).unwrap()).unwrap();
+            assert_backup_manifest_validator(bundled_script, 4, "usr/lib/qml/Legacy.qml");
+        }
+        for retired in [
+            "usr/lib/qml/QuickSettings/Utils/Style.qml",
+            "usr/lib/qml/SystemUI/Notification/NotificationStyle.qml",
+            "usr/lib/qml/SystemUI/Notification/Toast.qml",
+        ] {
+            assert!(!files.contains_key(&format!("overlay/{retired}")));
+        }
         for target in TARGETS {
             assert_eq!(
                 files.get(&format!("overlay/{target}")).unwrap(),
