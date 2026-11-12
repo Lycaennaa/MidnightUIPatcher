@@ -270,6 +270,9 @@ impl AppView {
     }
 
     fn edit_settings(&mut self, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
         self.settings_open = true;
         self.error = None;
         cx.notify();
@@ -286,7 +289,7 @@ impl AppView {
         cx.notify();
     }
 
-    fn reset_appearance_options(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn reset_appearance_options(&mut self, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
@@ -295,7 +298,7 @@ impl AppView {
             let value = defaults
                 .value(id)
                 .expect("option metadata must map to a value");
-            input.update(cx, |field, cx| field.set_text(value, window, cx));
+            input.update(cx, |field, cx| field.set_text(value, cx));
         }
         self.invalidate_plan(
             "Appearance choices reset to defaults; inspect to preview or save them.",
@@ -733,7 +736,7 @@ impl Render for AppView {
                                 div().px_3().py_2().bg(if self.busy { rgb(0x383a3d) } else { rgb(0x343944) }).rounded_md()
                                     .id("reset-appearance-defaults")
                                     .debug_selector(|| "reset-appearance-defaults".to_owned())
-                                    .when(!self.busy, |button| button.cursor_pointer().on_click(cx.listener(|this, _, window, cx| this.reset_appearance_options(window, cx))))
+                                    .when(!self.busy, |button| button.cursor_pointer().on_click(cx.listener(|this, _, _, cx| this.reset_appearance_options(cx))))
                                     .child("Reset appearance defaults"),
                             ),
                     ),
@@ -976,7 +979,9 @@ fn patch_row(
                         PATCH_OPTION_SPECS
                             .iter()
                             .filter(|option| option.patch_id == patch.id)
-                            .map(|option| patch_option_field(option, appearance.input(option.id))),
+                            .map(|option| {
+                                patch_option_field(option, appearance.input(option.id), busy, cx)
+                            }),
                     ),
             )
         })
@@ -1015,15 +1020,229 @@ fn settings_field(
         .child(div().text_sm().text_color(rgb(0xb7bbc2)).child(help))
 }
 
-fn patch_option_field(option: &PatchOptionSpec, input: Entity<LineInput>) -> impl IntoElement {
+fn patch_option_field(
+    option: &PatchOptionSpec,
+    input: Entity<LineInput>,
+    busy: bool,
+    cx: &Context<AppView>,
+) -> impl IntoElement {
+    let input_row = if option.kind == PatchOptionKind::Color {
+        let current_value = input.read_with(cx, |input, _| input.text());
+        let color = hex_color_rgb(&current_value).map_or(0x41454d, |[red, green, blue]| {
+            ((red as u32) << 16) | ((green as u32) << 8) | blue as u32
+        });
+        let picker_input = input.clone();
+        let option_id = option.id;
+        let option_label = option.label;
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .w(px(28.0))
+                    .h(px(28.0))
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(0x41454d))
+                    .bg(rgb(color)),
+            )
+            .child(div().flex_1().min_w_0().child(input))
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .bg(if busy {
+                        rgb(0x383a3d)
+                    } else {
+                        rgb(0x343944)
+                    })
+                    .rounded_md()
+                    .id(SharedString::from(format!(
+                        "patch-option-color-picker-{option_id}"
+                    )))
+                    .debug_selector(move || format!("patch-option-color-picker-{option_id}"))
+                    .when(!busy, |button| {
+                        let picker_input = picker_input.clone();
+                        button.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| {
+                            if this.busy {
+                                return;
+                            }
+                            let current = picker_input.read_with(cx, |input, _| input.text());
+                            let initial_rgb = hex_color_rgb(&current).unwrap_or([0, 0, 0]);
+                            let title = format!("Choose {option_label}");
+                            this.busy = true;
+                            this.status = format!(
+                                "Choose a color for {option_label} or cancel the color dialog."
+                            );
+                            cx.notify();
+                            cx.spawn(async move |weak, async_cx| {
+                                let result = async_cx
+                                    .background_spawn(async move {
+                                        tinyfiledialogs::color_chooser_dialog(
+                                            &title,
+                                            tinyfiledialogs::DefaultColorValue::RGB(&initial_rgb),
+                                        )
+                                    })
+                                    .await;
+                                let _ = weak.update(async_cx, |this, cx| {
+                                    this.busy = false;
+                                    if let Some((_, selected_rgb)) = result {
+                                        let selected =
+                                            color_with_picked_rgb(&current, selected_rgb);
+                                        let input =
+                                            this.settings_fields.appearance.input(option_id);
+                                        let value_at_return =
+                                            input.read_with(cx, |input, _| input.text());
+                                        if value_at_return != current {
+                                            this.status = "Color was not applied because the hex value changed while the picker was open.".into();
+                                        } else {
+                                            input.update(cx, |input, input_cx| {
+                                                input.set_text(selected.clone(), input_cx)
+                                            });
+                                            if !current.eq_ignore_ascii_case(&selected) {
+                                                this.invalidate_plan(
+                                                    "Appearance colors changed; inspect again before applying.",
+                                                );
+                                            } else {
+                                                this.status =
+                                                    "Color selection left this value unchanged."
+                                                        .into();
+                                            }
+                                        }
+                                    } else {
+                                        this.status =
+                                            "Color picker closed without a selection; no changes made."
+                                                .into();
+                                    }
+                                    cx.notify();
+                                });
+                            })
+                            .detach();
+                        }))
+                    })
+                    .child(if busy { "Please wait" } else { "Choose color" }),
+            )
+    } else {
+        div().flex().items_center().gap_2().child(input)
+    };
+
     div()
         .flex()
         .flex_col()
         .gap_1()
         .debug_selector(|| format!("patch-option-field-{}", option.id))
         .child(div().text_sm().child(option.label))
-        .child(input)
+        .child(input_row)
         .child(div().text_sm().text_color(rgb(0xb7bbc2)).child(option.help))
+        .when(option.kind == PatchOptionKind::Color, |field| {
+            field.child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(0xb7bbc2))
+                    .child("Picker changes RGB and preserves alpha from 8-digit hex; edit the hex value to change alpha."),
+            )
+        })
+}
+
+fn hex_color_rgb(value: &str) -> Option<[u8; 3]> {
+    let hex = value.strip_prefix('#')?;
+    if !matches!(hex.len(), 6 | 8) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let rgb = if hex.len() == 8 { &hex[2..] } else { hex };
+    Some([
+        u8::from_str_radix(&rgb[0..2], 16).ok()?,
+        u8::from_str_radix(&rgb[2..4], 16).ok()?,
+        u8::from_str_radix(&rgb[4..6], 16).ok()?,
+    ])
+}
+
+fn color_with_picked_rgb(current: &str, [red, green, blue]: [u8; 3]) -> String {
+    let alpha = current
+        .strip_prefix('#')
+        .filter(|hex| hex.len() == 8 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .and_then(|hex| u8::from_str_radix(&hex[..2], 16).ok());
+    if let Some(alpha) = alpha {
+        format!("#{alpha:02X}{red:02X}{green:02X}{blue:02X}")
+    } else {
+        format!("#{red:02X}{green:02X}{blue:02X}")
+    }
+}
+
+#[cfg(test)]
+mod color_picker_tests {
+    use super::{color_with_picked_rgb, hex_color_rgb};
+
+    #[test]
+    fn picker_uses_qt_rgb_and_preserves_alpha() {
+        assert_eq!(hex_color_rgb("#112233"), Some([0x11, 0x22, 0x33]));
+        assert_eq!(hex_color_rgb("#80112233"), Some([0x11, 0x22, 0x33]));
+        assert_eq!(hex_color_rgb("#1234🙂"), None);
+        assert_eq!(
+            color_with_picked_rgb("#80112233", [0xaa, 0xbb, 0xcc]),
+            "#80AABBCC"
+        );
+        assert_eq!(
+            color_with_picked_rgb("#112233", [0xaa, 0xbb, 0xcc]),
+            "#AABBCC"
+        );
+        assert_eq!(
+            color_with_picked_rgb("#GG112233", [0xaa, 0xbb, 0xcc]),
+            "#AABBCC"
+        );
+    }
+}
+
+#[cfg(test)]
+mod color_picker_ui_tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    #[gpui::test]
+    async fn every_color_option_renders_a_picker(cx: &TestAppContext) {
+        let mut app_cx = (*cx).clone();
+        let (_view, window_cx) = app_cx.add_window_view(|_, cx| {
+            let config = UserConfig::default();
+            AppView {
+                settings_file: None,
+                settings_fields: SettingsFields::new(&config, cx),
+                config,
+                settings_open: false,
+                settings_load_failed: false,
+                selected_ids: BTreeSet::new(),
+                expanded_patch_ids: PATCHES.iter().map(|patch| patch.id.to_owned()).collect(),
+                plan: None,
+                busy: false,
+                error: None,
+                status: "Test".into(),
+                show_diff: false,
+                confirm_unverified: false,
+                confirm_root_recovery: false,
+                confirm_refresh: false,
+                deployment_status: "Not applied".into(),
+                refresh_status: "Not restarted".into(),
+                visual_result: "Not checked".into(),
+            }
+        });
+        window_cx.simulate_resize(size(px(1568.0), px(4000.0)));
+        window_cx.run_until_parked();
+
+        for selector in [
+            "patch-option-color-picker-main-panel-color",
+            "patch-option-color-picker-menu-popup-color",
+            "patch-option-color-picker-button-default-color",
+            "patch-option-color-picker-button-idle-fill",
+            "patch-option-color-picker-input-tile-background-color",
+            "patch-option-color-picker-input-tile-text-color",
+            "patch-option-color-picker-input-tile-border-color",
+        ] {
+            assert!(
+                window_cx.debug_bounds(selector).is_some(),
+                "{selector} should be rendered",
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1148,13 +1367,13 @@ mod visual_layout_tests {
     #[gpui::test]
     async fn appearance_settings_save_with_connection_port(cx: &TestAppContext) {
         let mut app_cx = (*cx).clone();
-        let (_view, window_cx) = app_cx.add_window_view(|window, cx| {
+        let (_view, window_cx) = app_cx.add_window_view(|_, cx| {
             let mut config = UserConfig::default();
             config.port = 1111;
             let settings_fields = SettingsFields::new(&config, cx);
             settings_fields
                 .port
-                .update(cx, |field, cx| field.set_text("2222".into(), window, cx));
+                .update(cx, |field, cx| field.set_text("2222".into(), cx));
             let text_color = settings_fields
                 .appearance
                 .inputs
@@ -1163,7 +1382,7 @@ mod visual_layout_tests {
                 .unwrap()
                 .1
                 .clone();
-            text_color.update(cx, |field, cx| field.set_text("#00AACC".into(), window, cx));
+            text_color.update(cx, |field, cx| field.set_text("#00AACC".into(), cx));
 
             let saved = settings_fields.to_config(&config, cx).unwrap();
             assert_eq!(saved.port, 2222);
@@ -1217,13 +1436,13 @@ mod visual_layout_tests {
         config::save_at(&path, &initial).unwrap();
 
         let app_path = path.clone();
-        let (_view, window_cx) = app_cx.add_window_view(move |window, cx| {
+        let (_view, window_cx) = app_cx.add_window_view(move |_, cx| {
             let config = initial.clone();
             let settings_fields = SettingsFields::new(&config, cx);
             settings_fields
                 .appearance
                 .input("main-panel-color")
-                .update(cx, |field, cx| field.set_text("#445566".into(), window, cx));
+                .update(cx, |field, cx| field.set_text("#445566".into(), cx));
             AppView {
                 settings_file: Some(SettingsFile::Explicit(app_path)),
                 config,

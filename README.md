@@ -27,7 +27,7 @@ Use `--ssh-config-file PATH` when the alias is in a non-default OpenSSH config; 
 
 `patches list` reports configurable option keys and defaults. Repeat `--patch-option KEY=VALUE` on `device inspect` or `device apply` to override saved values for that command; omitted keys use saved config. Add `--save-options` to persist supplied overrides before SSH/device work, or use `config set --patch-option KEY=VALUE` to save without contacting the TV. Temporary overrides must be repeated on apply to reproduce the inspected plan and on `report` to include those values in the status report; report overrides are not saved.
 
-Colors accept Qt hex `#RRGGBB` or alpha-first `#AARRGGBB`; the GUI keeps each tweak's option editor collapsed by default and provides hex entry inside it. Panel/icon opacity accepts 0–1 and selected-border width accepts 0–100. Invalid values are rejected rather than inserted into QML.
+Colors accept Qt hex `#RRGGBB` or alpha-first `#AARRGGBB`; the GUI includes a cross-platform picker beside every color field. The picker changes RGB and preserves alpha from 8-digit values; use hex entry to change alpha. On Linux, the picker uses an available desktop dialog utility such as Zenity or KDialog. Panel/icon opacity accepts 0–1 and selected-border width accepts 0–100. Invalid values are rejected rather than inserted into QML.
 
 Inspection does not change TV state; `--save-options` can write the local config. Inspection checks the live hook, lock, mounts, hashes, and backups, fetches the eight Quick Settings and Input Picker QML files over root SSH, and validates every known patch site. Review the summary and fingerprint; add `--diff` to explicitly include the raw QML diff. All edits are selected by default. Repeat `--patch ID` to select specific edits or use `--exclude ID` to omit edits.
 
@@ -48,7 +48,7 @@ Text mode writes results to stdout and errors to stderr. `--format json` writes 
 
 ### GUI
 
-Select edits and inspect the TV. Edit connection and appearance settings to choose preset colors or enter hex, adjust opacity and border width, and reset appearance defaults. Save settings to persist them. Review the pre-install summary and optional raw diff. Structurally compatible but unverified firmware requires an explicit warning confirmation. Applying also requires confirming root SSH recovery is available.
+Select edits and inspect the TV. Edit connection and appearance settings, use the color picker beside any color hex field, adjust opacity and border width, and reset appearance defaults. The color picker changes RGB while preserving existing alpha; use hex entry to change alpha. Save settings to persist them. Review the pre-install summary and optional raw diff. Structurally compatible but unverified firmware requires an explicit warning confirmation. Applying also requires confirming root SSH recovery is available.
 
 The theme updates state in `/var/lib/webosbrew`; it does not write QML files into `/usr`, flash firmware, or install an IPK. A display-service restart can interrupt the TV UI. Visually check Quick Settings and the Input Picker after a refresh; successful deployment is not visual verification.
 

@@ -102,7 +102,7 @@ impl LineInput {
         self.content.to_string()
     }
 
-    pub fn set_text(&mut self, value: String, _: &Window, cx: &mut Context<Self>) {
+    pub fn set_text(&mut self, value: String, cx: &mut Context<Self>) {
         self.content = value.into();
         let end = self.content.len();
         self.selected_range = end..end;

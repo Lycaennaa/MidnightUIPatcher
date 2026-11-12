@@ -5,11 +5,12 @@ edition = "2024"
 
 [features]
 default = ["desktop"]
-desktop = ["dep:gpui"]
+desktop = ["dep:gpui", "dep:tinyfiledialogs"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 gpui = { version = "0.2.2", optional = true }
+tinyfiledialogs = { version = "3.9.1", optional = true }
 sha2 = "0.10"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
