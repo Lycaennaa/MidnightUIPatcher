@@ -1,5 +1,9 @@
+mod qml;
+#[cfg(test)]
+mod tests;
+
+use self::qml::QmlDoc;
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::Range;
 
 use thiserror::Error;
 
@@ -23,452 +27,11 @@ pub struct PatchOutput {
     pub applied: Vec<&'static PatchSpec>,
 }
 
-#[derive(Clone, Debug)]
-struct Token {
-    start: usize,
-    end: usize,
-    line: usize,
-}
-
-struct QmlDoc<'a> {
-    source: &'a str,
-    tokens: Vec<Token>,
-    matching: Vec<Option<usize>>,
-    container: Vec<Option<usize>>,
-}
-
-impl<'a> QmlDoc<'a> {
-    fn parse(source: &'a str, file: &str) -> Result<Self, PatchError> {
-        let mut tokens = Vec::new();
-        let bytes = source.as_bytes();
-        let mut i = 0;
-        let mut line = 1;
-        while i < bytes.len() {
-            match bytes[i] {
-                b' ' | b'\t' | b'\r' => i += 1,
-                b'\n' => {
-                    line += 1;
-                    i += 1;
-                }
-                b'/' if bytes.get(i + 1) == Some(&b'/') => {
-                    i += 2;
-                    while i < bytes.len() && bytes[i] != b'\n' {
-                        i += 1;
-                    }
-                }
-                b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                    i += 2;
-                    let mut closed = false;
-                    while i + 1 < bytes.len() {
-                        if bytes[i] == b'\n' {
-                            line += 1;
-                        }
-                        if bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                            i += 2;
-                            closed = true;
-                            break;
-                        }
-                        i += 1;
-                    }
-                    if !closed {
-                        return Err(unsupported(file, "unterminated block comment"));
-                    }
-                }
-                quote @ (b'\'' | b'"' | b'`') => {
-                    let start = i;
-                    i += 1;
-                    let mut closed = false;
-                    while i < bytes.len() {
-                        if bytes[i] == b'\\' {
-                            i = (i + 2).min(bytes.len());
-                        } else if bytes[i] == quote {
-                            i += 1;
-                            closed = true;
-                            break;
-                        } else {
-                            if bytes[i] == b'\n' {
-                                line += 1;
-                            }
-                            i += 1;
-                        }
-                    }
-                    if !closed {
-                        return Err(unsupported(file, "unterminated string literal"));
-                    }
-                    tokens.push(Token {
-                        start,
-                        end: i,
-                        line,
-                    });
-                }
-                b if is_ident_start(b) => {
-                    let start = i;
-                    i += 1;
-                    while i < bytes.len() && is_ident_continue(bytes[i]) {
-                        i += 1;
-                    }
-                    tokens.push(Token {
-                        start,
-                        end: i,
-                        line,
-                    });
-                }
-                b if b.is_ascii_digit() => {
-                    let start = i;
-                    i += 1;
-                    while i < bytes.len()
-                        && (bytes[i].is_ascii_alphanumeric()
-                            || bytes[i] == b'.'
-                            || bytes[i] == b'_')
-                    {
-                        i += 1;
-                    }
-                    tokens.push(Token {
-                        start,
-                        end: i,
-                        line,
-                    });
-                }
-                _ => {
-                    let start = i;
-                    i += 1;
-                    tokens.push(Token {
-                        start,
-                        end: i,
-                        line,
-                    });
-                }
-            }
-        }
-
-        let mut matching = vec![None; tokens.len()];
-        let mut container = vec![None; tokens.len()];
-        let mut stack: Vec<(usize, u8)> = Vec::new();
-        for index in 0..tokens.len() {
-            let text = &source[tokens[index].start..tokens[index].end];
-            let byte = text.as_bytes()[0];
-            if is_close(byte) {
-                let Some((open, open_byte)) = stack.pop() else {
-                    return Err(unsupported(file, "unbalanced delimiters"));
-                };
-                if !same_delimiter(open_byte, byte) {
-                    return Err(unsupported(file, "mismatched delimiters"));
-                }
-                container[index] = Some(open);
-                matching[index] = Some(open);
-                matching[open] = Some(index);
-            } else {
-                container[index] = stack.last().map(|(open, _)| *open);
-                if is_open(byte) {
-                    stack.push((index, byte));
-                }
-            }
-        }
-        if !stack.is_empty() {
-            return Err(unsupported(file, "unbalanced delimiters"));
-        }
-        Ok(Self {
-            source,
-            tokens,
-            matching,
-            container,
-        })
-    }
-
-    fn text(&self, index: usize) -> &str {
-        &self.source[self.tokens[index].start..self.tokens[index].end]
-    }
-
-    fn token_eq(&self, index: usize, value: &str) -> bool {
-        self.text(index) == value
-    }
-
-    fn token_sequence(&self, start: usize, end: usize) -> Vec<&str> {
-        (start..end).map(|i| self.text(i)).collect()
-    }
-
-    fn direct_member(&self, scope: usize, name: &str) -> Result<(usize, usize), PatchError> {
-        let Some(close) = self.matching[scope] else {
-            return Err(PatchError::Unsupported {
-                file: "<qml>".into(),
-                detail: "missing object end".into(),
-            });
-        };
-        let mut matches = Vec::new();
-        for index in scope + 1..close {
-            if self.container[index] == Some(scope)
-                && self.token_eq(index, name)
-                && self.tokens.get(index + 1).is_some()
-                && self.token_eq(index + 1, ":")
-            {
-                matches.push((index, index + 2));
-            }
-        }
-        match matches.as_slice() {
-            [one] => Ok(*one),
-            [] => Err(PatchError::Unsupported {
-                file: "<qml>".into(),
-                detail: format!("property {name} not found"),
-            }),
-            _ => Err(PatchError::Unsupported {
-                file: "<qml>".into(),
-                detail: format!("property {name} is ambiguous"),
-            }),
-        }
-    }
-
-    fn object_by_id(&self, id: &str, file: &str) -> Result<usize, PatchError> {
-        let mut found = Vec::new();
-        for i in 0..self.tokens.len().saturating_sub(2) {
-            if self.container[i].is_some()
-                && self.token_eq(i, "id")
-                && self.token_eq(i + 1, ":")
-                && self.token_eq(i + 2, id)
-            {
-                if let Some(scope) = self.container[i] {
-                    found.push(scope);
-                }
-            }
-        }
-        found.sort_unstable();
-        found.dedup();
-        match found.as_slice() {
-            [one] => Ok(*one),
-            [] => Err(unsupported(file, &format!("object id {id} not found"))),
-            _ => Err(unsupported(file, &format!("object id {id} is ambiguous"))),
-        }
-    }
-
-    fn child_object_with_property(
-        &self,
-        parent: usize,
-        class: &str,
-        property: &str,
-        expected: &str,
-        file: &str,
-    ) -> Result<usize, PatchError> {
-        let Some(close) = self.matching[parent] else {
-            return Err(unsupported(file, "missing parent object end"));
-        };
-        let expected_tokens = lex_fragment(expected);
-        let mut found = Vec::new();
-        for i in parent + 1..close {
-            if self.container[i] != Some(parent)
-                || !self.token_eq(i, class)
-                || !self.token_eq(i + 1, "{")
-            {
-                continue;
-            }
-            let child = i + 1;
-            if let Ok((_, value_start)) = self.direct_member(child, property) {
-                let range = self.value_line_range(child, value_start);
-                if self.token_sequence(range.start, range.end)
-                    == expected_tokens
-                        .iter()
-                        .map(String::as_str)
-                        .collect::<Vec<_>>()
-                {
-                    found.push(child);
-                }
-            }
-        }
-        match found.as_slice() {
-            [one] => Ok(*one),
-            [] => Err(unsupported(
-                file,
-                &format!("no unique {class} child has expected {property}"),
-            )),
-            _ => Err(unsupported(
-                file,
-                &format!("multiple {class} children have expected {property}"),
-            )),
-        }
-    }
-
-    fn value_line_range(&self, scope: usize, start: usize) -> Range<usize> {
-        if start >= self.tokens.len() {
-            return start..start;
-        }
-        let line = self.tokens[start].line;
-        let mut end = start;
-        while end < self.tokens.len() && self.tokens[end].line == line {
-            if self.container[end] == Some(scope)
-                && (self.token_eq(end, ",") || self.token_eq(end, ";") || self.token_eq(end, "}"))
-            {
-                break;
-            }
-            end += 1;
-        }
-        start..end
-    }
-
-    fn scalar_span(
-        &self,
-        scope: usize,
-        property: &str,
-        expected: &str,
-        file: &str,
-    ) -> Result<Range<usize>, PatchError> {
-        let (_, value_start) = self
-            .direct_member(scope, property)
-            .map_err(|e| refile(e, file))?;
-        let range = self.value_line_range(scope, value_start);
-        let expected_tokens = lex_fragment(expected);
-        let actual = self.token_sequence(range.start, range.end);
-        if actual
-            != expected_tokens
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-        {
-            return Err(unsupported(
-                file,
-                &format!("unexpected value for {property}"),
-            ));
-        }
-        if expected_tokens.is_empty() {
-            return Err(unsupported(file, "empty expected value"));
-        }
-        let first = &self.tokens[range.start];
-        let last = &self.tokens[range.end - 1];
-        Ok(first.start..last.end)
-    }
-
-    fn expression_literal_spans(
-        &self,
-        scope: usize,
-        property: &str,
-        expected_literal: &str,
-        expected_count: usize,
-        required_identifiers: &[&str],
-        required_operators: &[&str],
-        file: &str,
-    ) -> Result<Vec<Range<usize>>, PatchError> {
-        let (_, value_start) = self
-            .direct_member(scope, property)
-            .map_err(|e| refile(e, file))?;
-        let range = self.value_line_range(scope, value_start);
-        let mut spans = Vec::new();
-        let mut id_counts = BTreeMap::new();
-        let mut op_counts = BTreeMap::new();
-        for index in range.clone() {
-            let token = self.text(index);
-            if token == expected_literal {
-                spans.push(self.tokens[index].start..self.tokens[index].end);
-            }
-            if required_identifiers.contains(&token) {
-                *id_counts.entry(token).or_insert(0usize) += 1;
-            }
-            if required_operators.contains(&token) {
-                *op_counts.entry(token).or_insert(0usize) += 1;
-            }
-        }
-        if spans.len() != expected_count {
-            return Err(unsupported(
-                file,
-                &format!(
-                    "{property} has {} matching old values; expected {expected_count}",
-                    spans.len()
-                ),
-            ));
-        }
-        for identifier in required_identifiers {
-            if id_counts.get(identifier).copied().unwrap_or_default() == 0 {
-                return Err(unsupported(
-                    file,
-                    &format!("{property} lacks expected condition {identifier}"),
-                ));
-            }
-        }
-        for operator in required_operators {
-            if op_counts.get(operator).copied().unwrap_or_default() == 0 {
-                return Err(unsupported(
-                    file,
-                    &format!("{property} lacks expected operator {operator}"),
-                ));
-            }
-        }
-        Ok(spans)
-    }
-}
-
-fn is_ident_start(byte: u8) -> bool {
-    byte.is_ascii_alphabetic() || byte == b'_' || byte == b'$'
-}
-fn is_ident_continue(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$'
-}
-fn is_open(byte: u8) -> bool {
-    matches!(byte, b'{' | b'(' | b'[')
-}
-fn is_close(byte: u8) -> bool {
-    matches!(byte, b'}' | b')' | b']')
-}
-fn same_delimiter(open: u8, close: u8) -> bool {
-    matches!((open, close), (b'{', b'}') | (b'(', b')') | (b'[', b']'))
-}
-
 fn unsupported(file: &str, detail: &str) -> PatchError {
     PatchError::Unsupported {
         file: file.to_owned(),
         detail: detail.to_owned(),
     }
-}
-
-fn refile(error: PatchError, file: &str) -> PatchError {
-    match error {
-        PatchError::Unsupported { detail, .. } => PatchError::Unsupported {
-            file: file.to_owned(),
-            detail,
-        },
-        other => other,
-    }
-}
-
-fn lex_fragment(fragment: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let bytes = fragment.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i].is_ascii_whitespace() {
-            i += 1;
-            continue;
-        }
-        let start = i;
-        match bytes[i] {
-            b'\'' | b'"' | b'`' => {
-                let quote = bytes[i];
-                i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == b'\\' {
-                        i = (i + 2).min(bytes.len());
-                    } else if bytes[i] == quote {
-                        i += 1;
-                        break;
-                    } else {
-                        i += 1;
-                    }
-                }
-            }
-            b if is_ident_start(b) => {
-                i += 1;
-                while i < bytes.len() && is_ident_continue(bytes[i]) {
-                    i += 1;
-                }
-            }
-            b if b.is_ascii_digit() => {
-                i += 1;
-                while i < bytes.len()
-                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'.' || bytes[i] == b'_')
-                {
-                    i += 1;
-                }
-            }
-            _ => i += 1,
-        }
-        tokens.push(fragment[start..i].to_owned());
-    }
-    tokens
 }
 
 #[derive(Clone)]
@@ -478,6 +41,23 @@ struct Edit {
     replacement: String,
 }
 
+fn append_site_edits(
+    edits: &mut BTreeMap<String, Vec<Edit>>,
+    doc: &QmlDoc<'_>,
+    rule: PatchRule,
+    target: &str,
+    selected: bool,
+) -> Result<(), PatchError> {
+    let mut patch_edits = locate_patch(doc, rule, target)?;
+    if selected {
+        edits
+            .entry(target.to_owned())
+            .or_default()
+            .append(&mut patch_edits);
+    }
+    Ok(())
+}
+
 fn collect_patch_edits(
     docs: &BTreeMap<String, QmlDoc<'_>>,
     patches: &[PatchSpec],
@@ -485,13 +65,32 @@ fn collect_patch_edits(
 ) -> Result<BTreeMap<String, Vec<Edit>>, PatchError> {
     let mut edits: BTreeMap<String, Vec<Edit>> = BTreeMap::new();
     for patch in patches {
-        let doc = &docs[patch.target];
-        let mut patch_edits = locate_patch(doc, patch.rule, patch.target)?;
-        if selected.contains(patch.id) {
-            edits
-                .entry(patch.target.to_owned())
-                .or_default()
-                .append(&mut patch_edits);
+        let is_selected = selected.contains(patch.id);
+        match patch.rule {
+            PatchRule::MultiSite { sites } => {
+                if sites.is_empty() {
+                    return Err(unsupported(
+                        patch.target,
+                        "multi-site patch has no target sites",
+                    ));
+                }
+                for site in sites {
+                    append_site_edits(
+                        &mut edits,
+                        &docs[site.target],
+                        site.rule,
+                        site.target,
+                        is_selected,
+                    )?;
+                }
+            }
+            rule => append_site_edits(
+                &mut edits,
+                &docs[patch.target],
+                rule,
+                patch.target,
+                is_selected,
+            )?,
         }
     }
     Ok(edits)
@@ -521,7 +120,7 @@ pub fn patch_qml(
 
     let mut output = BTreeMap::new();
     for (path, doc) in docs {
-        let mut text = doc.source.to_owned();
+        let mut text = doc.source().to_owned();
         if let Some(mut file_edits) = edits.remove(&path) {
             file_edits.sort_by_key(|edit| std::cmp::Reverse(edit.start));
             let mut previous_start = usize::MAX;
@@ -558,6 +157,25 @@ fn scalar_edit(
         end: span.end,
         replacement: replacement.to_owned(),
     }])
+}
+fn condition_edits(
+    doc: &QmlDoc<'_>,
+    body_open: usize,
+    body_close: usize,
+    expected: &str,
+    replacement: &str,
+    expected_count: usize,
+    file: &str,
+) -> Result<Vec<Edit>, PatchError> {
+    let spans = doc.if_condition_spans(body_open, body_close, expected, expected_count, file)?;
+    Ok(spans
+        .into_iter()
+        .map(|span| Edit {
+            start: span.start,
+            end: span.end,
+            replacement: replacement.to_owned(),
+        })
+        .collect())
 }
 
 fn locate_patch(doc: &QmlDoc<'_>, rule: PatchRule, file: &str) -> Result<Vec<Edit>, PatchError> {
@@ -610,6 +228,111 @@ fn locate_patch(doc: &QmlDoc<'_>, rule: PatchRule, file: &str) -> Result<Vec<Edi
                 })
                 .collect())
         }
+        PatchRule::ScalarGroup { root_id, targets } => {
+            if targets.is_empty() {
+                return Err(unsupported(file, "scalar group has no targets"));
+            }
+            let root = doc.object_by_id(root_id, file)?;
+            let mut edits = Vec::with_capacity(targets.len());
+            for target in targets {
+                let scope = match target.scope {
+                    Some(scope) => doc.child_object_with_property(
+                        root,
+                        scope.class,
+                        scope.property,
+                        scope.expected,
+                        file,
+                    )?,
+                    None => root,
+                };
+                edits.extend(scalar_edit(
+                    doc,
+                    scope,
+                    target.property,
+                    target.expected,
+                    target.replacement,
+                    file,
+                )?);
+            }
+            Ok(edits)
+        }
+        PatchRule::FunctionStatements { root_id, targets } => {
+            if targets.is_empty() {
+                return Err(unsupported(file, "function statement group has no targets"));
+            }
+            let root = doc.object_by_id(root_id, file)?;
+            let edit_capacity = targets
+                .iter()
+                .map(|target| target.expected_count)
+                .sum::<usize>();
+            let mut edits = Vec::with_capacity(edit_capacity);
+            for target in targets {
+                let (body_open, body_close) = doc.function_body(root, target.function, file)?;
+                let spans = doc.statement_spans(
+                    body_open,
+                    body_close,
+                    target.expected,
+                    target.expected_count,
+                    file,
+                )?;
+                edits.extend(spans.into_iter().map(|span| Edit {
+                    start: span.start,
+                    end: span.end,
+                    replacement: target.replacement.to_owned(),
+                }));
+            }
+            Ok(edits)
+        }
+        PatchRule::IfCondition {
+            root_id,
+            function,
+            expected,
+            replacement,
+            expected_count,
+        } => {
+            let root = doc.object_by_id(root_id, file)?;
+            let (body_open, body_close) = doc.function_body(root, function, file)?;
+            condition_edits(
+                doc,
+                body_open,
+                body_close,
+                expected,
+                replacement,
+                expected_count,
+                file,
+            )
+        }
+        PatchRule::HandlerCondition {
+            root_id,
+            scope,
+            handler,
+            expected,
+            replacement,
+            expected_count,
+        } => {
+            let root = doc.object_by_id(root_id, file)?;
+            let scope = doc.child_object_with_property(
+                root,
+                scope.class,
+                scope.property,
+                scope.expected,
+                file,
+            )?;
+            let (body_open, body_close) = doc.handler_body(scope, handler, file)?;
+            condition_edits(
+                doc,
+                body_open,
+                body_close,
+                expected,
+                replacement,
+                expected_count,
+                file,
+            )
+        }
+        PatchRule::MultiSite { .. } => Err(unsupported(
+            file,
+            "multi-site patch groups must be resolved before matching a QML file",
+        )),
     }
 }
 
@@ -628,114 +351,4 @@ where
         return Err(PatchError::EmptySelection);
     }
     Ok(selected)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::patches::ChildObjectScope;
-
-    #[test]
-    fn tokenizer_ignores_comment_and_string_delimiters() {
-        let source = r#"Item { // }
-            property string note: "{ not a block }"
-            Rectangle { id: child }
-        }"#;
-        let parsed = QmlDoc::parse(source, "fixture.qml").unwrap();
-        let root = parsed
-            .tokens
-            .iter()
-            .enumerate()
-            .find(|(index, _)| parsed.text(*index) == "{")
-            .unwrap()
-            .0;
-        assert_eq!(parsed.text(parsed.matching[root].unwrap()), "}");
-        assert_eq!(
-            parsed.matching.iter().filter(|pair| pair.is_some()).count(),
-            4
-        );
-    }
-
-    #[test]
-    fn scalar_rule_targets_unique_child_object_by_property() {
-        const RULE: PatchRule = PatchRule::Scalar {
-            root_id: "fixtureRoot",
-            scope: Some(ChildObjectScope {
-                class: "Rectangle",
-                property: "visible",
-                expected: "isBackdrop",
-            }),
-            property: "color",
-            expected: "\"#112233\"",
-            replacement: "\"#000000\"",
-        };
-        let input = r##"Item {
-            id: fixtureRoot
-            Rectangle { visible: isBackdrop; color: "#112233" }
-            Rectangle { visible: false; color: "#112233" }
-        }"##;
-
-        let doc = QmlDoc::parse(input, "fixture.qml").unwrap();
-        let edit = locate_patch(&doc, RULE, "fixture.qml").unwrap().remove(0);
-        let mut output = input.to_owned();
-        output.replace_range(edit.start..edit.end, &edit.replacement);
-        assert!(output.contains("visible: isBackdrop; color: \"#000000\""));
-        assert!(output.contains("visible: false; color: \"#112233\""));
-
-        for ambiguous in [
-            input.replace("visible: false", "visible: isBackdrop"),
-            input.replace("visible: isBackdrop", "visible: isDialog"),
-        ] {
-            let doc = QmlDoc::parse(&ambiguous, "fixture.qml").unwrap();
-            assert!(matches!(
-                locate_patch(&doc, RULE, "fixture.qml"),
-                Err(PatchError::Unsupported { .. })
-            ));
-        }
-    }
-
-    #[test]
-    fn unselected_patch_sites_are_still_validated() {
-        let input = r##"Item { id: fixtureRoot; color: "#112233" }"##;
-        let doc = QmlDoc::parse(input, "fixture.qml").unwrap();
-        let docs = BTreeMap::from([("fixture.qml".to_owned(), doc)]);
-        let patches = [
-            PatchSpec {
-                rule: PatchRule::Scalar {
-                    root_id: "fixtureRoot",
-                    scope: None,
-                    property: "color",
-                    expected: "\"#112233\"",
-                    replacement: "\"#000000\"",
-                },
-                id: "selected",
-                label: "selected patch",
-                target: "fixture.qml",
-            },
-            PatchSpec {
-                rule: PatchRule::Scalar {
-                    root_id: "fixtureRoot",
-                    scope: None,
-                    property: "color",
-                    expected: "\"#445566\"",
-                    replacement: "\"#000000\"",
-                },
-                id: "unselected",
-                label: "unselected patch",
-                target: "fixture.qml",
-            },
-        ];
-        let selected = BTreeSet::from(["selected".to_owned()]);
-
-        let error = collect_patch_edits(&docs, &patches, &selected)
-            .err()
-            .unwrap();
-        assert_eq!(
-            error,
-            PatchError::Unsupported {
-                file: "fixture.qml".to_owned(),
-                detail: "unexpected value for color".to_owned(),
-            }
-        );
-    }
 }

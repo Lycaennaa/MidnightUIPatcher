@@ -12,7 +12,7 @@ use crate::config::{self, UserConfig};
 use crate::deploy::{self, DeploymentPlan};
 use crate::patches::{PATCHES, PatchSpec, TARGETS};
 use crate::text_input::{self, LineInput};
-const DEPLOY_SUCCESS: &str = "Installed/updated; two mounts and backup manifest verified";
+const DEPLOY_SUCCESS: &str = "Installed/updated; all target mounts and backup manifest verified";
 
 pub fn run(config_path: Option<PathBuf>) {
     Application::new().run(move |cx: &mut App| {
@@ -366,7 +366,7 @@ impl AppView {
                 this.busy = false;
                 match result {
                     Ok(()) => {
-                        this.status = "Display service restarted; both overlay mounts remain active and retired target paths remain unmounted. Check Quick Settings visually on the TV.".into();
+                        this.status = "Display service restarted; all overlay mounts remain active and retired target paths remain unmounted. Check Quick Settings and Input Picker visually on the TV.".into();
                         this.refresh_status = "Restarted; owner visual check pending".into();
                     }
                     Err(error) => {
@@ -425,7 +425,7 @@ impl Render for AppView {
             .text_color(rgb(0xe8e9eb))
             .overflow_y_scroll()
             .child(div().text_xl().font_weight(gpui::FontWeight::BOLD).child("Midnight UI Patcher"))
-            .child(div().text_sm().text_color(rgb(0xb7bbc2)).child("Patches selected LG webOS Quick Settings QML files locally, then transfers the result directly over root SSH. No QML, logs, or device details are sent anywhere else."))
+            .child(div().text_sm().text_color(rgb(0xb7bbc2)).child("Patches selected LG webOS Quick Settings and Input Picker QML files locally, then transfers the result directly over root SSH. No QML, logs, or device details are sent anywhere else."))
             .child(div().text_sm().text_color(rgb(0xb7bbc2)).child("Independent, unofficial project; not affiliated with or endorsed by LG Electronics."))
             .child(
                 div().flex().flex_col().gap_2().p_3().bg(rgb(0x22252b)).rounded_md()

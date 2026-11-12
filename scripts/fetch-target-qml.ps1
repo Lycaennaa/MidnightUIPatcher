@@ -30,21 +30,27 @@ if (Test-Path -LiteralPath $destination) {
 $stage = Join-Path $downloads ".LG-G4-QML-$FirmwareLabel-$([guid]::NewGuid().ToString('N')).partial"
 
 $relativePaths = @(
-    'usr/lib/qml/QuickSettings/Utils/Style.qml',
     'usr/lib/qml/QuickSettings/Containers/QuickSettingsMainView.qml',
-    'usr/lib/qml/SystemUI/Notification/NotificationStyle.qml',
     'usr/lib/qml/QuickSettings/Component/BaseControlPanelButton.qml',
-    'usr/lib/qml/SystemUI/Notification/Toast.qml'
+    'usr/lib/qml/InputPicker/Containers/RootView.qml',
+    'usr/lib/qml/InputPicker/Containers/InputPickerListItem.qml',
+    'usr/lib/qml/InputPicker/Containers/InputPickerListItemTile.qml',
+    'usr/lib/qml/InputPicker/Containers/InputPickerMainView.qml',
+    'usr/lib/qml/InputPicker/Controllers/AppInterfaces/Interfaces.qml',
+    'usr/lib/qml/InputPicker/Controllers/ConnectionsInterfaces/Interfaces.qml'
 )
 $remoteCheck = @'
 set -eu
 [ "$(id -u)" = 0 ] || { echo "SSH session is not root" >&2; exit 1; }
 for file in \
-  /usr/lib/qml/QuickSettings/Utils/Style.qml \
   /usr/lib/qml/QuickSettings/Containers/QuickSettingsMainView.qml \
   /usr/lib/qml/QuickSettings/Component/BaseControlPanelButton.qml \
-  /usr/lib/qml/SystemUI/Notification/NotificationStyle.qml \
-  /usr/lib/qml/SystemUI/Notification/Toast.qml
+  /usr/lib/qml/InputPicker/Containers/RootView.qml \
+  /usr/lib/qml/InputPicker/Containers/InputPickerListItem.qml \
+  /usr/lib/qml/InputPicker/Containers/InputPickerListItemTile.qml \
+  /usr/lib/qml/InputPicker/Containers/InputPickerMainView.qml \
+  /usr/lib/qml/InputPicker/Controllers/AppInterfaces/Interfaces.qml \
+  /usr/lib/qml/InputPicker/Controllers/ConnectionsInterfaces/Interfaces.qml
 do
   [ -f "$file" ] && [ ! -L "$file" ] || { echo "Missing/non-regular target file: $file" >&2; exit 1; }
   if awk -v target="$file" '$2 == target { found=1 } END { exit !found }' /proc/mounts; then

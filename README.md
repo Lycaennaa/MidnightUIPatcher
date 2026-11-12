@@ -1,8 +1,8 @@
 # Midnight UI Patcher for LG webOS TVs
 
-A source-only Rust GUI and CLI for applying selected Quick Settings theme edits to an owner's own LG webOS TV. It fetches the TV's QML over root SSH, validates strict structural matches, patches locally, and transfers a per-install bundle directly to that TV.
+A source-only Rust GUI and CLI for applying selected Quick Settings and Input Picker theme edits to an owner's own LG webOS TV. It fetches the TV's QML over root SSH, validates strict structural matches, patches locally, and transfers a per-install bundle directly to that TV.
 
-QML (Qt Modeling Language) is a declarative language for defining user interfaces. This tool edits selected QML files that make up parts of webOS Quick Settings.
+QML (Qt Modeling Language) is a declarative language for defining user interfaces. This tool edits selected QML files that make up parts of webOS Quick Settings and the Input Picker screen.
 
 This is an independent, unofficial project; it is not affiliated with or endorsed by LG Electronics.
 
@@ -24,7 +24,7 @@ cargo run -- --format json device inspect
 Replace `my-tv` with an alias configured in the selected OpenSSH config.
 Use `--ssh-config-file PATH` when the alias is in a non-default OpenSSH config; blank uses OpenSSH's default config.
 
-Inspection is read-only: it checks the live hook, lock, mounts, hashes, and backups, fetches the two Quick Settings QML files over root SSH, and validates every known patch site. Review the summary and fingerprint; add `--diff` to explicitly include the raw QML diff. All edits are selected by default. Repeat `--patch ID` to select specific edits or use `--exclude ID` to omit edits.
+Inspection is read-only: it checks the live hook, lock, mounts, hashes, and backups, fetches the eight Quick Settings and Input Picker QML files over root SSH, and validates every known patch site. Review the summary and fingerprint; add `--diff` to explicitly include the raw QML diff. All edits are selected by default. Repeat `--patch ID` to select specific edits or use `--exclude ID` to omit edits.
 
 Apply re-inspects the TV and refuses to deploy if the source, selection, connection settings, or resulting plan differs from the reviewed fingerprint. Replace the placeholder with `plan_fingerprint` from inspection:
 
@@ -36,7 +36,7 @@ The unverified-firmware acknowledgement is required when firmware is not maintai
 
 ```sh
 cargo run -- device restart-display --confirm-owner-approval
-cargo run -- report --structurally-verified 6 --deployment succeeded --refresh restarted-visual-check-pending --visual-result looks-good
+cargo run -- report --structurally-verified 17 --deployment succeeded --refresh restarted-visual-check-pending --visual-result looks-good
 ```
 
 Text mode writes results to stdout and errors to stderr. `--format json` writes one JSON object to stdout for success, operation errors, and usage errors. Exit codes are 0 for success, 1 for an operation failure, and 2 for invalid or blocked commands. The visual result is an owner-provided observation, not automated verification.
@@ -45,11 +45,14 @@ Text mode writes results to stdout and errors to stderr. `--format json` writes 
 
 Select edits and inspect the TV. Review the pre-install summary and optional raw diff. Structurally compatible but unverified firmware requires an explicit warning confirmation. Applying also requires confirming root SSH recovery is available.
 
-The theme updates state in `/var/lib/webosbrew`; it does not write QML files into `/usr`, flash firmware, or install an IPK. A display-service restart can interrupt the TV UI. Visually check Quick Settings after a refresh; successful deployment is not visual verification.
+The theme updates state in `/var/lib/webosbrew`; it does not write QML files into `/usr`, flash firmware, or install an IPK. A display-service restart can interrupt the TV UI. Visually check Quick Settings and the Input Picker after a refresh; successful deployment is not visual verification.
 
-Existing five-target installations migrate in place to the two Quick Settings targets. The update removes and verifies the three retired mounts while retaining original and pre-update backups.
+Existing two-target installations expand in place to eight targets: the two Quick Settings files and six Input Picker files. Historical five-target installations also retire three obsolete mounts while retaining original and pre-update backups.
 
 Patch selections are independent. Missing, duplicate, or unexpected matches remain hard failures.
+
+The Input Picker shows a border only on the selected input, hides inactive external inputs, and hides the Universal Control settings button while keeping its associated input tile available.
+
 
 ## Build and verify
 

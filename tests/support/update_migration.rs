@@ -16,6 +16,11 @@ pub(super) const PREVIOUS_TARGETS: [&str; 5] = [
     "usr/lib/qml/QuickSettings/Component/BaseControlPanelButton.qml",
 ];
 
+pub(super) const CURRENT_TARGETS: [&str; 2] = [
+    "usr/lib/qml/QuickSettings/Containers/QuickSettingsMainView.qml",
+    "usr/lib/qml/QuickSettings/Component/BaseControlPanelButton.qml",
+];
+
 pub(super) fn old_targets_for_added_target_migration() -> Vec<&'static str> {
     assert!(
         !TARGETS.is_empty(),

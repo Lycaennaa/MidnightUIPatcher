@@ -13,14 +13,14 @@ use midnight_ui_patcher::deploy::{self, DeploymentPlan};
 use midnight_ui_patcher::patcher::{PatchError, patch_qml, selected_patch_ids};
 use midnight_ui_patcher::patches::{PATCHES, TARGETS};
 
-const DEPLOY_SUCCESS: &str = "Installed/updated; two mounts and backup manifest verified";
+const DEPLOY_SUCCESS: &str = "Installed/updated; all target mounts and backup manifest verified";
 const DEPLOY_REFRESH_PENDING: &str = "Pending owner approval";
 
 #[derive(Debug, Parser)]
 #[command(
     name = "midnight-ui-patcher",
     version,
-    about = "Inspect and manage the LG webOS Quick Settings theme",
+    about = "Inspect and manage the LG webOS Quick Settings and Input Picker theme",
     after_help = "Start with `patches list` or `device inspect`. Applying rechecks the inspected plan and requires explicit safety confirmations.",
     arg_required_else_help = true,
     disable_help_subcommand = true
@@ -144,7 +144,7 @@ enum DeviceCommand {
     Apply(ApplyArgs),
     /// Restart the display service after confirming it may interrupt the TV UI.
     #[command(
-        after_help = "The remote script verifies the active overlay, backup manifest, both mounts, and that retired target paths remain unmounted before restarting surface-manager-daemon.service. The TV UI may be interrupted."
+        after_help = "The remote script verifies the active overlay, backup manifest, all target mounts, and that retired target paths remain unmounted before restarting surface-manager-daemon.service. The TV UI may be interrupted."
     )]
     RestartDisplay(RestartDisplayArgs),
 }
@@ -518,15 +518,20 @@ fn run_patches(command: PatchesCommand) -> Result<CommandResult, CommandFailure>
                         "id": patch.id,
                         "label": patch.label,
                         "target": patch.target,
+                        "targets": patch.affected_targets().collect::<Vec<_>>(),
                     })
                 })
                 .collect::<Vec<_>>();
             let mut text = format!("{} independent edits:\n", PATCHES.len());
             for patch in &PATCHES {
-                text.push_str(&format!(
-                    "  {}  {}\n      {}\n",
-                    patch.id, patch.label, patch.target
-                ));
+                text.push_str(&format!("  {}  {}\n      ", patch.id, patch.label));
+                for (index, target) in patch.affected_targets().enumerate() {
+                    if index > 0 {
+                        text.push_str(", ");
+                    }
+                    text.push_str(target);
+                }
+                text.push('\n');
             }
             Ok(CommandResult {
                 text,
@@ -612,7 +617,7 @@ fn apply(args: ApplyArgs, config_path: Option<&Path>) -> Result<CommandResult, C
             data["display_refresh"] = json!("pending_owner_approval");
             data["report"] = json!(report);
             let text = format!(
-                "{summary}Deployment succeeded; both mounts and the backup manifest verified.\nDisplay refresh is still pending separate owner approval.\n\n{report}"
+                "{summary}Deployment succeeded; all target mounts and the backup manifest verified.\nDisplay refresh is still pending separate owner approval.\n\n{report}"
             );
             Ok(CommandResult { text, data })
         }
@@ -640,7 +645,7 @@ fn restart_display(
     let (_, settings) = load_settings(config_path)?;
     deploy::restart_display_service(&settings, true).map_err(deploy_failure)?;
     Ok(CommandResult {
-        text: "Display service restarted; both overlay mounts remain active and retired target paths remain unmounted. Check Quick Settings visually on the TV.\n".to_owned(),
+        text: "Display service restarted; all overlay mounts remain active and retired target paths remain unmounted. Check Quick Settings and Input Picker visually on the TV.\n".to_owned(),
         data: json!({
             "display_refresh": "restarted",
             "visual_check": "pending_owner_visual_check",
@@ -762,6 +767,7 @@ fn plan_value(plan: &DeploymentPlan, fingerprint: &str, include_diff: bool) -> V
                 "id": patch.id,
                 "label": patch.label,
                 "target": patch.target,
+                "targets": patch.affected_targets().collect::<Vec<_>>(),
             })
         })
         .collect::<Vec<_>>();
@@ -1027,11 +1033,9 @@ mod tests {
 
         assert!(result.text.contains("Model: OLED55"));
         assert!(result.text.contains("- Set panel backdrop color to black"));
-        assert!(
-            result
-                .text
-                .contains("Deployment: Installed/updated; two mounts and backup manifest verified")
-        );
+        assert!(result.text.contains(
+            "Deployment: Installed/updated; all target mounts and backup manifest verified"
+        ));
         assert!(
             result
                 .text

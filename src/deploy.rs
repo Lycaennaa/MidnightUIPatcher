@@ -184,6 +184,12 @@ LOCK=/run/black-theme-overlay.lock
 if [ "$(id -u)" != 0 ] || [ -e "$LOCK" ] || [ -e /run/black-theme-update.lock ]; then
     echo "Root or idle target state required to fetch source." >&2; exit 1
 fi
+if [ ! -d /run ] || [ ! -w /run ]; then
+    echo "Runtime staging storage is unavailable." >&2; exit 1
+fi
+for tool in awk cp mkdir rm sha256sum tar; do
+    command -v "$tool" >/dev/null 2>&1 || { echo "Required fetch tool unavailable: $tool" >&2; exit 1; }
+done
 validate_target_arguments "$@" || { echo "Current target arguments are empty, duplicated, or unsafe." >&2; exit 1; }
 TARGET_FILES=
 for rel do TARGET_FILES="$TARGET_FILES $rel"; done
@@ -207,19 +213,34 @@ else
     INSTALLED_FILES=
     HISTORICAL_FILES=
 fi
+FETCH_STAGE=/run/black-theme-fetch.$$
+if [ -e "$FETCH_STAGE" ] || [ -L "$FETCH_STAGE" ]; then
+    echo "Temporary source staging path already exists." >&2; exit 1
+fi
+umask 077
+mkdir -m 700 "$FETCH_STAGE"
+cleanup_fetch_stage() { rm -rf "$FETCH_STAGE"; }
+trap cleanup_fetch_stage 0
+trap 'exit 1' HUP INT TERM
 set --
 for rel in $TARGET_FILES; do
     if [ "$HAS_STATE" -eq 1 ] && contains_path "$HISTORICAL_FILES" "$rel"; then
-        [ -f "$STATE/backups/$rel" ] && [ ! -L "$STATE/backups/$rel" ] || { echo "Retained original backup is missing or unsafe: $rel" >&2; exit 1; }
-        set -- "$@" -C "$STATE/backups" "$rel"
+        source="$STATE/backups/$rel"
     else
         if contains_path "$INSTALLED_FILES" "$rel"; then echo "Installed target has no retained original backup: $rel" >&2; exit 1; fi
         if mount_present "/$rel"; then echo "New target is already mounted and cannot be fetched live: /$rel" >&2; exit 1; fi
         [ -f "/$rel" ] && [ ! -L "/$rel" ] || { echo "New live target is missing or unsafe: /$rel" >&2; exit 1; }
-        set -- "$@" -C / "$rel"
+        source="/$rel"
     fi
+    destination="$FETCH_STAGE/$rel"
+    mkdir -p "${destination%/*}"
+    cp "$source" "$destination"
+    set -- "$@" "$rel"
 done
-tar -czf - "$@"
+(
+    cd "$FETCH_STAGE"
+    tar -czf - "$@"
+)
 "#
 );
 const REFRESH_SCRIPT: &str = remote_script!(

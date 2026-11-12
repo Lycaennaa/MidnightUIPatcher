@@ -38,11 +38,14 @@ REMOTE_CHECK='
 set -eu
 [ "$(id -u)" = 0 ] || { echo "SSH session is not root" >&2; exit 1; }
 for file in \
-  /usr/lib/qml/QuickSettings/Utils/Style.qml \
   /usr/lib/qml/QuickSettings/Containers/QuickSettingsMainView.qml \
   /usr/lib/qml/QuickSettings/Component/BaseControlPanelButton.qml \
-  /usr/lib/qml/SystemUI/Notification/NotificationStyle.qml \
-  /usr/lib/qml/SystemUI/Notification/Toast.qml
+  /usr/lib/qml/InputPicker/Containers/RootView.qml \
+  /usr/lib/qml/InputPicker/Containers/InputPickerListItem.qml \
+  /usr/lib/qml/InputPicker/Containers/InputPickerListItemTile.qml \
+  /usr/lib/qml/InputPicker/Containers/InputPickerMainView.qml \
+  /usr/lib/qml/InputPicker/Controllers/AppInterfaces/Interfaces.qml \
+  /usr/lib/qml/InputPicker/Controllers/ConnectionsInterfaces/Interfaces.qml
 do
   [ -f "$file" ] && [ ! -L "$file" ] || { echo "Missing/non-regular target file: $file" >&2; exit 1; }
   if awk -v target="$file" '\''$2 == target { found=1 } END { exit !found }'\'' /proc/mounts; then
@@ -53,10 +56,11 @@ done
 '
 
 ssh "$TARGET" "$REMOTE_CHECK"
-mkdir -p "$STAGE/usr/lib/qml/QuickSettings/Utils" \
-         "$STAGE/usr/lib/qml/QuickSettings/Containers" \
+mkdir -p "$STAGE/usr/lib/qml/QuickSettings/Containers" \
          "$STAGE/usr/lib/qml/QuickSettings/Component" \
-         "$STAGE/usr/lib/qml/SystemUI/Notification"
+         "$STAGE/usr/lib/qml/InputPicker/Containers" \
+         "$STAGE/usr/lib/qml/InputPicker/Controllers/AppInterfaces" \
+         "$STAGE/usr/lib/qml/InputPicker/Controllers/ConnectionsInterfaces"
 cleanup() {
     if [ -n "$STAGE" ] && [ -d "$STAGE" ]; then
         rm -rf "$STAGE"
@@ -64,16 +68,22 @@ cleanup() {
 }
 trap cleanup 0 HUP INT TERM
 
-scp "$TARGET:/usr/lib/qml/QuickSettings/Utils/Style.qml" \
-    "$STAGE/usr/lib/qml/QuickSettings/Utils/Style.qml"
 scp "$TARGET:/usr/lib/qml/QuickSettings/Containers/QuickSettingsMainView.qml" \
     "$STAGE/usr/lib/qml/QuickSettings/Containers/QuickSettingsMainView.qml"
 scp "$TARGET:/usr/lib/qml/QuickSettings/Component/BaseControlPanelButton.qml" \
     "$STAGE/usr/lib/qml/QuickSettings/Component/BaseControlPanelButton.qml"
-scp "$TARGET:/usr/lib/qml/SystemUI/Notification/NotificationStyle.qml" \
-    "$STAGE/usr/lib/qml/SystemUI/Notification/NotificationStyle.qml"
-scp "$TARGET:/usr/lib/qml/SystemUI/Notification/Toast.qml" \
-    "$STAGE/usr/lib/qml/SystemUI/Notification/Toast.qml"
+scp "$TARGET:/usr/lib/qml/InputPicker/Containers/RootView.qml" \
+    "$STAGE/usr/lib/qml/InputPicker/Containers/RootView.qml"
+scp "$TARGET:/usr/lib/qml/InputPicker/Containers/InputPickerListItem.qml" \
+    "$STAGE/usr/lib/qml/InputPicker/Containers/InputPickerListItem.qml"
+scp "$TARGET:/usr/lib/qml/InputPicker/Containers/InputPickerListItemTile.qml" \
+    "$STAGE/usr/lib/qml/InputPicker/Containers/InputPickerListItemTile.qml"
+scp "$TARGET:/usr/lib/qml/InputPicker/Containers/InputPickerMainView.qml" \
+    "$STAGE/usr/lib/qml/InputPicker/Containers/InputPickerMainView.qml"
+scp "$TARGET:/usr/lib/qml/InputPicker/Controllers/AppInterfaces/Interfaces.qml" \
+    "$STAGE/usr/lib/qml/InputPicker/Controllers/AppInterfaces/Interfaces.qml"
+scp "$TARGET:/usr/lib/qml/InputPicker/Controllers/ConnectionsInterfaces/Interfaces.qml" \
+    "$STAGE/usr/lib/qml/InputPicker/Controllers/ConnectionsInterfaces/Interfaces.qml"
 
 printf '%s\n' "User-reported firmware label: $VERSION" \
     "Source: read-only root SSH/SCP from $TARGET" \
@@ -83,11 +93,14 @@ printf '%s\n' "User-reported firmware label: $VERSION" \
 (
     cd "$STAGE"
     shasum -a 256 \
-        usr/lib/qml/QuickSettings/Utils/Style.qml \
         usr/lib/qml/QuickSettings/Containers/QuickSettingsMainView.qml \
         usr/lib/qml/QuickSettings/Component/BaseControlPanelButton.qml \
-        usr/lib/qml/SystemUI/Notification/NotificationStyle.qml \
-        usr/lib/qml/SystemUI/Notification/Toast.qml \
+        usr/lib/qml/InputPicker/Containers/RootView.qml \
+        usr/lib/qml/InputPicker/Containers/InputPickerListItem.qml \
+        usr/lib/qml/InputPicker/Containers/InputPickerListItemTile.qml \
+        usr/lib/qml/InputPicker/Containers/InputPickerMainView.qml \
+        usr/lib/qml/InputPicker/Controllers/AppInterfaces/Interfaces.qml \
+        usr/lib/qml/InputPicker/Controllers/ConnectionsInterfaces/Interfaces.qml \
         > SOURCE-SHA256SUMS
 )
 mv "$STAGE" "$DEST"

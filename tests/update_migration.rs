@@ -6,88 +6,91 @@ use std::fs;
 
 use midnight_ui_patcher::patches::TARGETS;
 use support::{
-    PREVIOUS_TARGETS, assert_original_backups, assert_overlay_targets, assert_preupdate_snapshot,
-    build_scenario, direct_backup_targets, expected_mount_targets, expected_original_targets,
-    invalid_target_manifests, mount_targets, old_targets_for_added_target_migration,
-    replace_package_target_manifest, run_update, verify_backup_manifest,
+    CURRENT_TARGETS, PREVIOUS_TARGETS, assert_original_backups, assert_overlay_targets,
+    assert_preupdate_snapshot, build_scenario, direct_backup_targets, expected_mount_targets,
+    expected_original_targets, invalid_target_manifests, mount_targets,
+    old_targets_for_added_target_migration, replace_package_target_manifest, run_update,
+    verify_backup_manifest,
 };
 
 #[test]
-fn five_target_update_migrates_to_manifest_targets_and_failure_restores_all_five() {
-    let success = build_scenario(&PREVIOUS_TARGETS, false);
-    assert_eq!(
-        mount_targets(&success),
-        expected_mount_targets(&success, &success.old_targets)
-    );
-    assert_overlay_targets(&success, &success.old_targets, "old-overlay");
-    let output = run_update(&success);
-    assert!(
-        output.status.success(),
-        "stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let state = success.root.join("webosbrew/black-theme");
-    assert_eq!(
-        fs::read_to_string(state.join("TARGET-SHA256SUMS")).unwrap(),
-        success.current_manifest
-    );
-    assert!(
-        success
-            .root
-            .join("run")
-            .join("black-theme-overlay.active")
-            .is_file()
-    );
-    assert_eq!(
-        mount_targets(&success),
-        expected_mount_targets(&success, &TARGETS)
-    );
-    assert_overlay_targets(&success, &TARGETS, "new-overlay");
-    assert_original_backups(&success, &expected_original_targets(&success));
-    assert_preupdate_snapshot(&success);
+fn old_target_sets_migrate_to_current_targets_and_rollback_on_failure() {
+    for old_targets in [&PREVIOUS_TARGETS[..], &CURRENT_TARGETS[..]] {
+        let success = build_scenario(old_targets, false);
+        assert_eq!(
+            mount_targets(&success),
+            expected_mount_targets(&success, &success.old_targets)
+        );
+        assert_overlay_targets(&success, &success.old_targets, "old-overlay");
+        let output = run_update(&success);
+        assert!(
+            output.status.success(),
+            "stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let state = success.root.join("webosbrew/black-theme");
+        assert_eq!(
+            fs::read_to_string(state.join("TARGET-SHA256SUMS")).unwrap(),
+            success.current_manifest
+        );
+        assert!(
+            success
+                .root
+                .join("run")
+                .join("black-theme-overlay.active")
+                .is_file()
+        );
+        assert_eq!(
+            mount_targets(&success),
+            expected_mount_targets(&success, &TARGETS)
+        );
+        assert_overlay_targets(&success, &TARGETS, "new-overlay");
+        assert_original_backups(&success, &expected_original_targets(&success));
+        assert_preupdate_snapshot(&success);
 
-    let failed = build_scenario(&PREVIOUS_TARGETS, true);
-    assert_eq!(
-        mount_targets(&failed),
-        expected_mount_targets(&failed, &failed.old_targets)
-    );
-    assert_overlay_targets(&failed, &failed.old_targets, "old-overlay");
-    let output = run_update(&failed);
-    assert!(
-        !output.status.success(),
-        "activation failure unexpectedly succeeded; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let state = failed.root.join("webosbrew/black-theme");
-    assert_eq!(
-        fs::read_to_string(state.join("TARGET-SHA256SUMS")).unwrap(),
-        failed.old_manifest
-    );
-    assert!(
-        failed
-            .root
-            .join("run")
-            .join("black-theme-overlay.active")
-            .is_file()
-    );
-    assert_eq!(
-        mount_targets(&failed),
-        expected_mount_targets(&failed, &failed.old_targets)
-    );
-    assert_overlay_targets(&failed, &failed.old_targets, "old-overlay");
-    assert_original_backups(&failed, &expected_original_targets(&failed));
-    assert_preupdate_snapshot(&failed);
-    assert!(
-        !fs::read_dir(failed.root.join("webosbrew"))
-            .unwrap()
-            .filter_map(Result::ok)
-            .any(|entry| entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with("black-theme.failed-overlay."))
-    );
+        let failed = build_scenario(old_targets, true);
+        assert_eq!(
+            mount_targets(&failed),
+            expected_mount_targets(&failed, &failed.old_targets)
+        );
+        assert_overlay_targets(&failed, &failed.old_targets, "old-overlay");
+        let output = run_update(&failed);
+        assert!(
+            !output.status.success(),
+            "activation failure unexpectedly succeeded; stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let state = failed.root.join("webosbrew/black-theme");
+        assert_eq!(
+            fs::read_to_string(state.join("TARGET-SHA256SUMS")).unwrap(),
+            failed.old_manifest
+        );
+        assert!(
+            failed
+                .root
+                .join("run")
+                .join("black-theme-overlay.active")
+                .is_file()
+        );
+        assert_eq!(
+            mount_targets(&failed),
+            expected_mount_targets(&failed, &failed.old_targets)
+        );
+        assert_overlay_targets(&failed, &failed.old_targets, "old-overlay");
+        assert_original_backups(&failed, &expected_original_targets(&failed));
+        assert_preupdate_snapshot(&failed);
+        assert!(
+            !fs::read_dir(failed.root.join("webosbrew"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("black-theme.failed-overlay."))
+        );
+    }
 }
 
 #[test]

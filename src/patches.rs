@@ -1,6 +1,12 @@
-pub const TARGETS: [&str; 2] = [
+pub const TARGETS: [&str; 8] = [
     "usr/lib/qml/QuickSettings/Containers/QuickSettingsMainView.qml",
     "usr/lib/qml/QuickSettings/Component/BaseControlPanelButton.qml",
+    "usr/lib/qml/InputPicker/Containers/RootView.qml",
+    "usr/lib/qml/InputPicker/Containers/InputPickerListItem.qml",
+    "usr/lib/qml/InputPicker/Containers/InputPickerListItemTile.qml",
+    "usr/lib/qml/InputPicker/Containers/InputPickerMainView.qml",
+    "usr/lib/qml/InputPicker/Controllers/AppInterfaces/Interfaces.qml",
+    "usr/lib/qml/InputPicker/Controllers/ConnectionsInterfaces/Interfaces.qml",
 ];
 
 #[derive(Clone, Copy, Debug)]
@@ -8,6 +14,21 @@ pub(crate) struct ChildObjectScope {
     pub(crate) class: &'static str,
     pub(crate) property: &'static str,
     pub(crate) expected: &'static str,
+}
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ScalarTarget {
+    pub(crate) scope: Option<ChildObjectScope>,
+    pub(crate) property: &'static str,
+    pub(crate) expected: &'static str,
+    pub(crate) replacement: &'static str,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FunctionStatementTarget {
+    pub(crate) function: &'static str,
+    pub(crate) expected: &'static str,
+    pub(crate) replacement: &'static str,
+    pub(crate) expected_count: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -28,6 +49,38 @@ pub(crate) enum PatchRule {
         required_operators: &'static [&'static str],
         replacement: &'static str,
     },
+    ScalarGroup {
+        root_id: &'static str,
+        targets: &'static [ScalarTarget],
+    },
+    FunctionStatements {
+        root_id: &'static str,
+        targets: &'static [FunctionStatementTarget],
+    },
+    IfCondition {
+        root_id: &'static str,
+        function: &'static str,
+        expected: &'static str,
+        replacement: &'static str,
+        expected_count: usize,
+    },
+    HandlerCondition {
+        root_id: &'static str,
+        scope: ChildObjectScope,
+        handler: &'static str,
+        expected: &'static str,
+        replacement: &'static str,
+        expected_count: usize,
+    },
+    MultiSite {
+        sites: &'static [PatchSite],
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PatchSite {
+    pub(crate) target: &'static str,
+    pub(crate) rule: PatchRule,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -37,6 +90,20 @@ pub struct PatchSpec {
     pub label: &'static str,
     pub target: &'static str,
 }
+impl PatchSpec {
+    pub fn affected_targets(&self) -> impl Iterator<Item = &'static str> + '_ {
+        let sites: &[PatchSite] = match self.rule {
+            PatchRule::MultiSite { sites } => sites,
+            _ => &[],
+        };
+        std::iter::once(self.target).chain(
+            sites
+                .iter()
+                .map(|site| site.target)
+                .filter(move |target| *target != self.target),
+        )
+    }
+}
 
 const MAIN_PANEL_CHILD: ChildObjectScope = ChildObjectScope {
     class: "Rectangle",
@@ -44,7 +111,123 @@ const MAIN_PANEL_CHILD: ChildObjectScope = ChildObjectScope {
     expected: "interfaces.systemInfo.checkBackGround",
 };
 
-pub const PATCHES: [PatchSpec; 6] = [
+const INPUT_TILE_ICON_EDITS: [ScalarTarget; 3] = [
+    ScalarTarget {
+        scope: Some(ChildObjectScope {
+            class: "Image",
+            property: "id",
+            expected: "inputSourceImage",
+        }),
+        property: "opacity",
+        expected: "entry.activate ? 1 : 0.5",
+        replacement: "0",
+    },
+    ScalarTarget {
+        scope: Some(ChildObjectScope {
+            class: "Image",
+            property: "id",
+            expected: "deviceControlImg",
+        }),
+        property: "opacity",
+        expected: "entry.activate ? 1 : 0.5",
+        replacement: "0",
+    },
+    ScalarTarget {
+        scope: Some(ChildObjectScope {
+            class: "Image",
+            property: "id",
+            expected: "curInputMark",
+        }),
+        property: "visible",
+        expected: "entry.currentInput ? entry.currentInput : false",
+        replacement: "false",
+    },
+];
+
+const INPUT_TILE_TEXT_EDITS: [ScalarTarget; 2] = [
+    ScalarTarget {
+        scope: Some(ChildObjectScope {
+            class: "ScrollText",
+            property: "id",
+            expected: "deviceName",
+        }),
+        property: "color",
+        expected: "entry.activate && (entry.status === \"connected\" || entry.status === undefined) ? \"#000000\" : \"#808080\"",
+        replacement: "\"#FF0000\"",
+    },
+    ScalarTarget {
+        scope: Some(ChildObjectScope {
+            class: "ScrollText",
+            property: "id",
+            expected: "portName",
+        }),
+        property: "color",
+        expected: "entry.activate ? \"#4D4D4D\" : \"#808080\"",
+        replacement: "\"#FF0000\"",
+    },
+];
+
+const INPUT_TILE_BORDER_EDITS: [ScalarTarget; 2] = [
+    ScalarTarget {
+        scope: None,
+        property: "border.color",
+        expected: "entry.activate ? \"#FFFFFFFF\" : \"#26FFFFFF\"",
+        replacement: "entry.currentInput ? \"#FFFFFFFF\" : \"transparent\"",
+    },
+    ScalarTarget {
+        scope: None,
+        property: "border.width",
+        expected: "entry.activate ? styler.getRelativeValue(1) : styler.getRelativeValue(0.5)",
+        replacement: "entry.currentInput ? styler.getRelativeValue(1) : 0",
+    },
+];
+const INPUT_HOME_HUB_STATEMENTS: [FunctionStatementTarget; 2] = [
+    FunctionStatementTarget {
+        function: "createInputPickerModel",
+        expected: "createTitle();",
+        replacement: "",
+        expected_count: 1,
+    },
+    FunctionStatementTarget {
+        function: "updateInputPickerModel",
+        expected: "var startIdx = 1;",
+        replacement: "var startIdx = 0;",
+        expected_count: 1,
+    },
+];
+
+const INPUT_LIVE_TV_STATEMENTS: [FunctionStatementTarget; 1] = [FunctionStatementTarget {
+    function: "getInputData",
+    expected: "root.addTVItem();",
+    replacement: "",
+    expected_count: 2,
+}];
+const INPUT_HOME_HUB_SITES: [PatchSite; 2] = [
+    PatchSite {
+        target: TARGETS[6],
+        rule: PatchRule::FunctionStatements {
+            root_id: "root",
+            targets: &INPUT_HOME_HUB_STATEMENTS,
+        },
+    },
+    PatchSite {
+        target: TARGETS[5],
+        rule: PatchRule::HandlerCondition {
+            root_id: "root",
+            scope: ChildObjectScope {
+                class: "Connections",
+                property: "target",
+                expected: "interfaces.application",
+            },
+            handler: "onShowView",
+            expected: "systemProperties.audioGuidanceOn",
+            replacement: "systemProperties.audioGuidanceOn && interfaces.application.inputPickerModel.count > 0",
+            expected_count: 1,
+        },
+    },
+];
+
+pub const PATCHES: [PatchSpec; 17] = [
     PatchSpec {
         rule: PatchRule::Scalar {
             root_id: "mainLayout",
@@ -118,5 +301,133 @@ pub const PATCHES: [PatchSpec; 6] = [
         id: "button-idle-fill",
         label: "Set idle tile fills to black",
         target: TARGETS[1],
+    },
+    PatchSpec {
+        rule: PatchRule::Scalar {
+            root_id: "root",
+            scope: Some(ChildObjectScope {
+                class: "Image",
+                property: "id",
+                expected: "gradationBG",
+            }),
+            property: "source",
+            expected: "styler.gradationBG",
+            replacement: "\"\"",
+        },
+        id: "input-screen-backdrop",
+        label: "Remove the input screen background",
+        target: TARGETS[2],
+    },
+    PatchSpec {
+        rule: PatchRule::Scalar {
+            root_id: "mainRibbonItem",
+            scope: Some(ChildObjectScope {
+                class: "Loader",
+                property: "id",
+                expected: "shadowLoader",
+            }),
+            property: "active",
+            expected: "hasFocus",
+            replacement: "false",
+        },
+        id: "input-tile-shadow",
+        label: "Remove the shadow behind input tiles",
+        target: TARGETS[3],
+    },
+    PatchSpec {
+        rule: PatchRule::MultiSite {
+            sites: &INPUT_HOME_HUB_SITES,
+        },
+        id: "input-home-hub",
+        label: "Remove the Home Hub tile",
+        target: TARGETS[6],
+    },
+    PatchSpec {
+        rule: PatchRule::FunctionStatements {
+            root_id: "root",
+            targets: &INPUT_LIVE_TV_STATEMENTS,
+        },
+        id: "input-live-tv",
+        label: "Remove the Live TV tile",
+        target: TARGETS[7],
+    },
+    PatchSpec {
+        rule: PatchRule::IfCondition {
+            root_id: "root",
+            function: "getInputData",
+            expected: "eimData.connected && (eimData.hdmiPlugIn === undefined || eimData.hdmiPlugIn) && !eimData.dongleConnected",
+            replacement: "eimData.connected && eimData.activate && (eimData.hdmiPlugIn === undefined || eimData.hdmiPlugIn) && !eimData.dongleConnected",
+            expected_count: 1,
+        },
+        id: "input-active-signal",
+        label: "Hide inputs without an active signal",
+        target: TARGETS[7],
+    },
+    PatchSpec {
+        rule: PatchRule::Scalar {
+            root_id: "categoryText",
+            scope: None,
+            property: "visible",
+            expected: "entry && entry.showCategory ? entry.showCategory : false",
+            replacement: "entry && entry.showCategory && entry.category !== stringSheet.input && entry.category !== stringSheet.inputMNT ? entry.showCategory : false",
+        },
+        id: "input-category-text",
+        label: "Hide the TV / Inputs category text",
+        target: TARGETS[5],
+    },
+    PatchSpec {
+        rule: PatchRule::Scalar {
+            root_id: "addOnButton",
+            scope: None,
+            property: "visible",
+            expected: "(entry.hasOwnProperty('addOnInfo') && entry.addOnInfo) &&",
+            replacement: "(entry.hasOwnProperty('addOnInfo') && entry.addOnInfo && entry.addOnInfo.type !== 'deviceControl') &&",
+        },
+        id: "input-universal-control",
+        label: "Hide the Universal Control settings button",
+        target: TARGETS[5],
+    },
+    PatchSpec {
+        rule: PatchRule::Scalar {
+            root_id: "mainRibbonItem",
+            scope: Some(ChildObjectScope {
+                class: "Rectangle",
+                property: "id",
+                expected: "bg",
+            }),
+            property: "color",
+            expected: "entry.activate ? \"#E6E6E6\" : entry.type === \"title\" ? \"#575E66\" : \"#A6A6A6\"",
+            replacement: "\"transparent\"",
+        },
+        id: "input-tile-background",
+        label: "Remove the input tile background",
+        target: TARGETS[3],
+    },
+    PatchSpec {
+        rule: PatchRule::ScalarGroup {
+            root_id: "root",
+            targets: &INPUT_TILE_ICON_EDITS,
+        },
+        id: "input-tile-icons",
+        label: "Remove the input tile icons",
+        target: TARGETS[4],
+    },
+    PatchSpec {
+        rule: PatchRule::ScalarGroup {
+            root_id: "root",
+            targets: &INPUT_TILE_TEXT_EDITS,
+        },
+        id: "input-tile-red-text",
+        label: "Make input tile text red",
+        target: TARGETS[4],
+    },
+    PatchSpec {
+        rule: PatchRule::ScalarGroup {
+            root_id: "root",
+            targets: &INPUT_TILE_BORDER_EDITS,
+        },
+        id: "input-tile-border",
+        label: "Show a border only on the selected input",
+        target: TARGETS[4],
     },
 ];
