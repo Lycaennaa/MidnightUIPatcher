@@ -20,3 +20,5 @@ target/
 /preview/SHA256SUMS
 /preview/TARGET-SHA256SUMS
 /GRILL-DECISIONS.txt
+/.tmp
+*.lock
