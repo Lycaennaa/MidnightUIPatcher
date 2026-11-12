@@ -88,9 +88,34 @@ pub(crate) struct PatchSite {
     pub(crate) rule: PatchRule,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PatchArea {
+    QuickSettings,
+    InputPicker,
+}
+
+impl PatchArea {
+    pub(crate) const ALL: [Self; 2] = [Self::QuickSettings, Self::InputPicker];
+
+    pub(crate) const fn id(self) -> &'static str {
+        match self {
+            Self::QuickSettings => "quick-settings",
+            Self::InputPicker => "input-picker",
+        }
+    }
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::QuickSettings => "Quick Settings",
+            Self::InputPicker => "Input Picker",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct PatchSpec {
     pub(crate) rule: PatchRule,
+    pub(crate) area: PatchArea,
     pub id: &'static str,
     pub label: &'static str,
     pub target: &'static str,
@@ -249,6 +274,7 @@ const INPUT_HOME_HUB_SITES: [PatchSite; 2] = [
 
 pub const PATCHES: [PatchSpec; 17] = [
     PatchSpec {
+        area: PatchArea::QuickSettings,
         rule: PatchRule::Scalar {
             root_id: "mainLayout",
             scope: Some(MAIN_PANEL_CHILD),
@@ -261,6 +287,7 @@ pub const PATCHES: [PatchSpec; 17] = [
         target: TARGETS[0],
     },
     PatchSpec {
+        area: PatchArea::QuickSettings,
         rule: PatchRule::Scalar {
             root_id: "mainLayout",
             scope: Some(MAIN_PANEL_CHILD),
@@ -273,6 +300,7 @@ pub const PATCHES: [PatchSpec; 17] = [
         target: TARGETS[0],
     },
     PatchSpec {
+        area: PatchArea::QuickSettings,
         rule: PatchRule::Scalar {
             root_id: "mainLayout",
             scope: Some(MAIN_PANEL_CHILD),
@@ -285,6 +313,7 @@ pub const PATCHES: [PatchSpec; 17] = [
         target: TARGETS[0],
     },
     PatchSpec {
+        area: PatchArea::QuickSettings,
         rule: PatchRule::Scalar {
             root_id: "menuPopupBg",
             scope: None,
@@ -297,6 +326,7 @@ pub const PATCHES: [PatchSpec; 17] = [
         target: TARGETS[0],
     },
     PatchSpec {
+        area: PatchArea::QuickSettings,
         rule: PatchRule::Scalar {
             root_id: "root",
             scope: None,
@@ -309,6 +339,7 @@ pub const PATCHES: [PatchSpec; 17] = [
         target: TARGETS[1],
     },
     PatchSpec {
+        area: PatchArea::QuickSettings,
         rule: PatchRule::ExpressionLiterals {
             root_id: "background",
             property: "color",
@@ -323,6 +354,7 @@ pub const PATCHES: [PatchSpec; 17] = [
         target: TARGETS[1],
     },
     PatchSpec {
+        area: PatchArea::InputPicker,
         rule: PatchRule::Scalar {
             root_id: "root",
             scope: Some(ChildObjectScope {
@@ -339,6 +371,7 @@ pub const PATCHES: [PatchSpec; 17] = [
         target: TARGETS[2],
     },
     PatchSpec {
+        area: PatchArea::InputPicker,
         rule: PatchRule::Scalar {
             root_id: "mainRibbonItem",
             scope: Some(ChildObjectScope {
@@ -355,6 +388,7 @@ pub const PATCHES: [PatchSpec; 17] = [
         target: TARGETS[3],
     },
     PatchSpec {
+        area: PatchArea::InputPicker,
         rule: PatchRule::MultiSite {
             sites: &INPUT_HOME_HUB_SITES,
         },
@@ -363,6 +397,7 @@ pub const PATCHES: [PatchSpec; 17] = [
         target: TARGETS[6],
     },
     PatchSpec {
+        area: PatchArea::InputPicker,
         rule: PatchRule::FunctionStatements {
             root_id: "root",
             targets: &INPUT_LIVE_TV_STATEMENTS,
@@ -372,6 +407,7 @@ pub const PATCHES: [PatchSpec; 17] = [
         target: TARGETS[7],
     },
     PatchSpec {
+        area: PatchArea::InputPicker,
         rule: PatchRule::IfCondition {
             root_id: "root",
             function: "getInputData",
@@ -384,6 +420,7 @@ pub const PATCHES: [PatchSpec; 17] = [
         target: TARGETS[7],
     },
     PatchSpec {
+        area: PatchArea::InputPicker,
         rule: PatchRule::Scalar {
             root_id: "categoryText",
             scope: None,
@@ -398,6 +435,7 @@ pub const PATCHES: [PatchSpec; 17] = [
         target: TARGETS[5],
     },
     PatchSpec {
+        area: PatchArea::InputPicker,
         rule: PatchRule::Scalar {
             root_id: "addOnButton",
             scope: None,
@@ -412,6 +450,7 @@ pub const PATCHES: [PatchSpec; 17] = [
         target: TARGETS[5],
     },
     PatchSpec {
+        area: PatchArea::InputPicker,
         rule: PatchRule::Scalar {
             root_id: "mainRibbonItem",
             scope: Some(ChildObjectScope {
@@ -428,6 +467,7 @@ pub const PATCHES: [PatchSpec; 17] = [
         target: TARGETS[3],
     },
     PatchSpec {
+        area: PatchArea::InputPicker,
         rule: PatchRule::ScalarGroup {
             root_id: "root",
             targets: &INPUT_TILE_ICON_EDITS,
@@ -437,6 +477,7 @@ pub const PATCHES: [PatchSpec; 17] = [
         target: TARGETS[4],
     },
     PatchSpec {
+        area: PatchArea::InputPicker,
         rule: PatchRule::ScalarGroup {
             root_id: "root",
             targets: &INPUT_TILE_TEXT_EDITS,
@@ -446,6 +487,7 @@ pub const PATCHES: [PatchSpec; 17] = [
         target: TARGETS[4],
     },
     PatchSpec {
+        area: PatchArea::InputPicker,
         rule: PatchRule::ScalarGroup {
             root_id: "root",
             targets: &INPUT_TILE_BORDER_EDITS,
@@ -455,3 +497,47 @@ pub const PATCHES: [PatchSpec; 17] = [
         target: TARGETS[4],
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::{PATCHES, PatchArea};
+
+    fn ids_for(area: PatchArea) -> Vec<&'static str> {
+        PATCHES
+            .iter()
+            .filter(|patch| patch.area == area)
+            .map(|patch| patch.id)
+            .collect()
+    }
+
+    #[test]
+    fn tweaks_are_grouped_by_affected_area() {
+        assert_eq!(
+            ids_for(PatchArea::QuickSettings),
+            vec![
+                "main-panel-color",
+                "main-panel-opacity",
+                "main-panel-visibility",
+                "menu-popup-color",
+                "button-default-color",
+                "button-idle-fill",
+            ],
+        );
+        assert_eq!(
+            ids_for(PatchArea::InputPicker),
+            vec![
+                "input-screen-backdrop",
+                "input-tile-shadow",
+                "input-home-hub",
+                "input-live-tv",
+                "input-active-signal",
+                "input-category-text",
+                "input-universal-control",
+                "input-tile-background",
+                "input-tile-icons",
+                "input-tile-red-text",
+                "input-tile-border",
+            ],
+        );
+    }
+}

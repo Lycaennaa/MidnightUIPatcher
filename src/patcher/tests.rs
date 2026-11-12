@@ -1,7 +1,7 @@
 use super::*;
 use crate::patches::{
-    ChildObjectScope, FunctionStatementTarget, PATCH_OPTION_SPECS, PatchOption, PatchValue,
-    ScalarTarget,
+    ChildObjectScope, FunctionStatementTarget, PATCH_OPTION_SPECS, PatchArea, PatchOption,
+    PatchValue, ScalarTarget,
 };
 #[test]
 fn scalar_rule_targets_unique_child_object_by_property() {
@@ -458,6 +458,7 @@ fn unselected_patch_sites_are_still_validated() {
     let docs = BTreeMap::from([("fixture.qml".to_owned(), doc)]);
     let patches = [
         PatchSpec {
+            area: PatchArea::QuickSettings,
             rule: PatchRule::Scalar {
                 root_id: "fixtureRoot",
                 scope: None,
@@ -470,6 +471,7 @@ fn unselected_patch_sites_are_still_validated() {
             target: "fixture.qml",
         },
         PatchSpec {
+            area: PatchArea::QuickSettings,
             rule: PatchRule::Scalar {
                 root_id: "fixtureRoot",
                 scope: None,

@@ -11,7 +11,8 @@ use gpui::{
 use crate::config::{self, UserConfig};
 use crate::deploy::{self, DeploymentPlan};
 use crate::patches::{
-    PATCH_OPTION_SPECS, PATCHES, PatchOptionKind, PatchOptionSpec, PatchOptions, PatchSpec, TARGETS,
+    PATCH_OPTION_SPECS, PATCHES, PatchArea, PatchOptionKind, PatchOptionSpec, PatchOptions,
+    PatchSpec, TARGETS,
 };
 use crate::text_input::{self, LineInput};
 const DEPLOY_SUCCESS: &str = "Installed/updated; all target mounts and backup manifest verified";
@@ -710,15 +711,33 @@ impl Render for AppView {
                     }),
             )
             .child(div().text_lg().font_weight(gpui::FontWeight::BOLD).child(format!("Choose tweaks ({selected_count}/{} selected)", PATCHES.len())))
-            .children(PATCHES.iter().map(|patch| {
-                patch_row(
-                    patch,
-                    self.selected_ids.contains(patch.id),
-                    self.expanded_patch_ids.contains(patch.id),
-                    self.busy,
-                    &self.settings_fields.appearance,
-                    cx,
-                )
+            .children(PatchArea::ALL.into_iter().map(|area| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .debug_selector(|| format!("patch-area-{}", area.id()))
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .child(area.label()),
+                    )
+                    .children(
+                        PATCHES
+                            .iter()
+                            .filter(move |patch| patch.area == area)
+                            .map(|patch| {
+                                patch_row(
+                                    patch,
+                                    self.selected_ids.contains(patch.id),
+                                    self.expanded_patch_ids.contains(patch.id),
+                                    self.busy,
+                                    &self.settings_fields.appearance,
+                                    cx,
+                                )
+                            }),
+                    )
             }))
             .child(
                 div().flex().flex_col().gap_2()
@@ -1296,6 +1315,14 @@ mod visual_layout_tests {
         assert!(bounds.size.width > px(0.0));
         assert!(bounds.origin.x >= px(0.0));
         assert!(bounds.origin.x + bounds.size.width <= px(1568.0));
+        assert!(
+            window_cx.debug_bounds("patch-area-quick-settings").is_some(),
+            "Quick Settings area should be rendered",
+        );
+        assert!(
+            window_cx.debug_bounds("patch-area-input-picker").is_some(),
+            "Input Picker area should be rendered",
+        );
         assert!(
             window_cx
                 .debug_bounds("patch-select-main-panel-color")

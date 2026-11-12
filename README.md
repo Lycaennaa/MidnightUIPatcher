@@ -48,7 +48,7 @@ Text mode writes results to stdout and errors to stderr. `--format json` writes 
 
 ### GUI
 
-Select edits and inspect the TV. Edit connection and appearance settings, use the color picker beside any color hex field, adjust opacity and border width, and reset appearance defaults. The color picker changes RGB while preserving existing alpha; use hex entry to change alpha. Save settings to persist them. Review the pre-install summary and optional raw diff. Structurally compatible but unverified firmware requires an explicit warning confirmation. Applying also requires confirming root SSH recovery is available.
+Select edits and inspect the TV. Tweak choices are grouped by area: Quick Settings and Input Picker. Edit connection and appearance settings, use the color picker beside any color hex field, adjust opacity and border width, and reset appearance defaults. The color picker changes RGB while preserving existing alpha; use hex entry to change alpha. Save settings to persist them. Review the pre-install summary and optional raw diff. Structurally compatible but unverified firmware requires an explicit warning confirmation. Applying also requires confirming root SSH recovery is available.
 
 The theme updates state in `/var/lib/webosbrew`; it does not write QML files into `/usr`, flash firmware, or install an IPK. A display-service restart can interrupt the TV UI. Visually check Quick Settings and the Input Picker after a refresh; successful deployment is not visual verification.
 

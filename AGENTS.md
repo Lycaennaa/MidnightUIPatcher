@@ -14,6 +14,7 @@
 ## Source of truth and packaging
 
 - `src/patches.rs` is canonical for structural match-and-replace rules and patch metadata; `src/patcher.rs` is the generic QML parsing and edit engine. Keep matches unique and strict; never add LG QML source, full source lines/blocks, or source-bearing diffs to Git.
+- Assign every `PatchSpec` to a `PatchArea` based on the UI it affects; the GUI groups tweaks from this metadata. Keep `PatchArea::ALL`, its labels/order, grouping tests, and README in sync when adding a tweak or area.
 - `preview/base/`, `preview/overlay/`, captured manifests, and generated bundles are local-only fixtures or deployment artifacts. Keep them ignored and never stage them. The maintainer-only `--verify-local-preview` check uses local fixtures; owners do not need them.
 - `preview/*.sh` contains generic lifecycle code embedded in a per-owner bundle. The GUI fetches QML from the owner's TV, patches locally, creates checksums and streams the bundle over root SSH. There is no checked-in install package or supported IPK release workflow.
 - Do not use the fresh installer over existing state or use package-manager installation as an update shortcut. Before an update, inspect the live hook, marker, lock, mounts, target hashes, and backup manifest; preserve original and pre-update backups and verify `BACKUP-SHA256SUMS` from the backups directory.
