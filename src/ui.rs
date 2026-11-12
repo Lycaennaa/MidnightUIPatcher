@@ -85,6 +85,7 @@ struct AppView {
     settings_load_failed: bool,
     selected_ids: BTreeSet<String>,
     expanded_patch_ids: BTreeSet<String>,
+    expanded_area_ids: BTreeSet<&'static str>,
     plan: Option<Arc<DeploymentPlan>>,
     busy: bool,
     error: Option<String>,
@@ -254,6 +255,7 @@ impl AppView {
             settings_open,
             settings_load_failed: error.is_some(),
             selected_ids: PATCHES.iter().map(|patch| patch.id.to_owned()).collect(),
+            expanded_area_ids: BTreeSet::new(),
             expanded_patch_ids: BTreeSet::new(),
             plan: None,
             busy: false,
@@ -622,6 +624,12 @@ impl AppView {
 impl Render for AppView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let selected_count = self.selected_ids.len();
+        let all_areas_expanded = PatchArea::ALL
+            .into_iter()
+            .all(|area| self.expanded_area_ids.contains(area.id()));
+        let all_tweaks_selected = PATCHES
+            .iter()
+            .all(|patch| self.selected_ids.contains(patch.id));
         let target = if self.config.ssh_target.is_empty() {
             "(not set)"
         } else {
@@ -710,8 +718,108 @@ impl Render for AppView {
                             )
                     }),
             )
-            .child(div().text_lg().font_weight(gpui::FontWeight::BOLD).child(format!("Choose tweaks ({selected_count}/{} selected)", PATCHES.len())))
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .debug_selector(|| {
+                        if all_tweaks_selected {
+                            "tweak-selection-all".to_owned()
+                        } else if selected_count == 0 {
+                            "tweak-selection-none".to_owned()
+                        } else {
+                            "tweak-selection-partial".to_owned()
+                        }
+                    })
+                    .child(format!(
+                        "Choose tweaks ({selected_count}/{} selected)",
+                        PATCHES.len()
+                    )),
+            )
+            .child(
+                div().flex().gap_2().child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .bg(rgb(0x343944))
+                        .rounded_md()
+                        .cursor_pointer()
+                        .id("toggle-all-areas")
+                        .debug_selector(|| {
+                            if all_areas_expanded {
+                                "close-all-areas".to_owned()
+                            } else {
+                                "expand-all-areas".to_owned()
+                            }
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if PatchArea::ALL
+                                .into_iter()
+                                .all(|area| this.expanded_area_ids.contains(area.id()))
+                            {
+                                this.expanded_area_ids.clear();
+                            } else {
+                                this.expanded_area_ids
+                                    .extend(PatchArea::ALL.into_iter().map(|area| area.id()));
+                            }
+                            cx.notify();
+                        }))
+                        .child(if all_areas_expanded {
+                            "Close all areas"
+                        } else {
+                            "Expand all areas"
+                        }),
+                )
+                .child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .bg(rgb(0x343944))
+                        .rounded_md()
+                        .cursor_pointer()
+                        .id("toggle-all-selection")
+                        .debug_selector(|| {
+                            if all_tweaks_selected {
+                                "deselect-all-tweaks".to_owned()
+                            } else {
+                                "select-all-tweaks".to_owned()
+                            }
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if this.busy {
+                                return;
+                            }
+                            if PATCHES
+                                .iter()
+                                .all(|patch| this.selected_ids.contains(patch.id))
+                            {
+                                this.selected_ids.clear();
+                                this.invalidate_plan(&format!(
+                                    "{}/{} tweaks selected. Select at least one before inspection.",
+                                    this.selected_ids.len(),
+                                    PATCHES.len(),
+                                ));
+                            } else {
+                                this.selected_ids = PATCHES
+                                    .iter()
+                                    .map(|patch| patch.id.to_owned())
+                                    .collect();
+                                this.invalidate_plan(&format!(
+                                    "All {} tweaks selected. Inspect the TV to validate the current source.",
+                                    PATCHES.len()
+                                ));
+                            }
+                            cx.notify();
+                        }))
+                        .child(if all_tweaks_selected {
+                            "Deselect all tweaks"
+                        } else {
+                            "Select all tweaks"
+                        }),
+                ),
+            )
             .children(PatchArea::ALL.into_iter().map(|area| {
+                let expanded = self.expanded_area_ids.contains(area.id());
                 div()
                     .flex()
                     .flex_col()
@@ -719,25 +827,47 @@ impl Render for AppView {
                     .debug_selector(|| format!("patch-area-{}", area.id()))
                     .child(
                         div()
-                            .text_lg()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .child(area.label()),
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .cursor_pointer()
+                            .id(area.id())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if this.expanded_area_ids.contains(area.id()) {
+                                    this.expanded_area_ids.remove(area.id());
+                                } else {
+                                    this.expanded_area_ids.insert(area.id());
+                                }
+                                cx.notify();
+                            }))
+                            .child(if expanded { "▼" } else { "▶" })
+                            .child(
+                                div()
+                                    .debug_selector(|| {
+                                        format!("patch-area-toggle-{}", area.id())
+                                    })
+                                    .text_lg()
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .child(area.label()),
+                            ),
                     )
-                    .children(
-                        PATCHES
-                            .iter()
-                            .filter(move |patch| patch.area == area)
-                            .map(|patch| {
-                                patch_row(
-                                    patch,
-                                    self.selected_ids.contains(patch.id),
-                                    self.expanded_patch_ids.contains(patch.id),
-                                    self.busy,
-                                    &self.settings_fields.appearance,
-                                    cx,
-                                )
-                            }),
-                    )
+                    .when(expanded, |section| {
+                        section.children(
+                            PATCHES
+                                .iter()
+                                .filter(move |patch| patch.area == area)
+                                .map(|patch| {
+                                    patch_row(
+                                        patch,
+                                        self.selected_ids.contains(patch.id),
+                                        self.expanded_patch_ids.contains(patch.id),
+                                        self.busy,
+                                        &self.settings_fields.appearance,
+                                        cx,
+                                    )
+                                }),
+                        )
+                    })
             }))
             .child(
                 div().flex().flex_col().gap_2()
@@ -759,41 +889,6 @@ impl Render for AppView {
                                     .child("Reset appearance defaults"),
                             ),
                     ),
-            )
-            .child(
-                div().flex().gap_2().child(
-                    div().px_3().py_2().bg(if self.busy || self.settings_open { rgb(0x383a3d) } else { rgb(0x315a88) }).rounded_md()
-                        .id("inspect-tv")
-                        .when(!self.busy && !self.settings_open, |button| button.cursor_pointer().on_click(cx.listener(|this, _, _, cx| this.inspect(cx))))
-                        .child(if self.busy { "Working…" } else if self.settings_open { "Save or discard connection settings first" } else { "Inspect TV and preview" }),
-                ).child(
-                    div().px_3().py_2().bg(rgb(0x343944)).rounded_md().cursor_pointer()
-                        .id("select-all")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if this.busy { return; }
-                            this.selected_ids = PATCHES.iter().map(|patch| patch.id.to_owned()).collect();
-                            this.invalidate_plan(&format!(
-                                "All {} tweaks selected. Inspect the TV to validate the current source.",
-                                PATCHES.len()
-                            ));
-                            cx.notify();
-                        }))
-                        .child("Select all tweaks"),
-                ).child(
-                    div().px_3().py_2().bg(rgb(0x343944)).rounded_md().cursor_pointer()
-                        .id("clear-all")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if this.busy { return; }
-                            this.selected_ids.clear();
-                            this.invalidate_plan(&format!(
-                                "{}/{} tweaks selected. Select at least one before inspection.",
-                                this.selected_ids.len(),
-                                PATCHES.len(),
-                            ));
-                            cx.notify();
-                        }))
-                        .child("Clear all tweaks"),
-                ),
             )
             .child(div().p_2().bg(rgb(0x22252b)).rounded_md().child(self.status.clone()))
             .when_some(self.error.clone(), |element, error| {
@@ -1230,6 +1325,7 @@ mod color_picker_ui_tests {
                 settings_open: false,
                 settings_load_failed: false,
                 selected_ids: BTreeSet::new(),
+                expanded_area_ids: PatchArea::ALL.into_iter().map(PatchArea::id).collect(),
                 expanded_patch_ids: PATCHES.iter().map(|patch| patch.id.to_owned()).collect(),
                 plan: None,
                 busy: false,
@@ -1293,6 +1389,7 @@ mod visual_layout_tests {
                 settings_load_failed: false,
                 selected_ids: BTreeSet::from(["main-panel-color".to_owned()]),
                 expanded_patch_ids: BTreeSet::new(),
+                expanded_area_ids: BTreeSet::new(),
                 plan: None,
                 busy: false,
                 error: None,
@@ -1315,18 +1412,67 @@ mod visual_layout_tests {
         assert!(bounds.size.width > px(0.0));
         assert!(bounds.origin.x >= px(0.0));
         assert!(bounds.origin.x + bounds.size.width <= px(1568.0));
-        assert!(
-            window_cx.debug_bounds("patch-area-quick-settings").is_some(),
-            "Quick Settings area should be rendered",
-        );
-        assert!(
-            window_cx.debug_bounds("patch-area-input-picker").is_some(),
-            "Input Picker area should be rendered",
-        );
+        let collapsed_height = window_cx
+            .debug_bounds("patch-area-quick-settings")
+            .expect("Quick Settings area should be rendered")
+            .size
+            .height;
         assert!(
             window_cx
                 .debug_bounds("patch-select-main-panel-color")
-                .is_some()
+                .is_none(),
+            "Quick Settings should start collapsed",
+        );
+        assert!(
+            window_cx
+                .debug_bounds("patch-select-input-screen-backdrop")
+                .is_none(),
+            "Input Picker should start collapsed",
+        );
+        let quick_settings_toggle = window_cx
+            .debug_bounds("patch-area-toggle-quick-settings")
+            .expect("Quick Settings heading should expand its area");
+        window_cx.simulate_click(quick_settings_toggle.center(), gpui::Modifiers::default());
+        window_cx.run_until_parked();
+        assert!(
+            window_cx
+                .debug_bounds("patch-select-main-panel-color")
+                .is_some(),
+            "opening Quick Settings should show its tweaks",
+        );
+        let expanded_height = window_cx
+            .debug_bounds("patch-area-quick-settings")
+            .expect("Quick Settings area should remain rendered")
+            .size
+            .height;
+        assert!(
+            expanded_height > collapsed_height,
+            "opening Quick Settings should increase its height",
+        );
+        let quick_settings_toggle = window_cx
+            .debug_bounds("patch-area-toggle-quick-settings")
+            .expect("Quick Settings heading should collapse its area");
+        window_cx.simulate_click(quick_settings_toggle.center(), gpui::Modifiers::default());
+        window_cx.run_until_parked();
+        let collapsed_height_after = window_cx
+            .debug_bounds("patch-area-quick-settings")
+            .expect("Quick Settings area should remain rendered")
+            .size
+            .height;
+        assert!(
+            collapsed_height_after < expanded_height,
+            "closing Quick Settings should reduce its height",
+        );
+        let quick_settings_toggle = window_cx
+            .debug_bounds("patch-area-toggle-quick-settings")
+            .expect("Quick Settings heading should expand its area again");
+        window_cx.simulate_click(quick_settings_toggle.center(), gpui::Modifiers::default());
+        window_cx.run_until_parked();
+        assert!(
+            window_cx
+                .debug_bounds("patch-select-main-panel-color")
+                .is_some(),
+            "reopening Quick Settings should restore its tweaks",
         );
         assert!(
             window_cx
@@ -1392,6 +1538,126 @@ mod visual_layout_tests {
         );
     }
     #[gpui::test]
+    async fn bulk_controls_track_area_and_tweak_state(cx: &TestAppContext) {
+        let mut app_cx = (*cx).clone();
+        let (_view, window_cx) = app_cx.add_window_view(|_, cx| {
+            let config = UserConfig::default();
+            AppView {
+                settings_file: None,
+                settings_fields: SettingsFields::new(&config, cx),
+                config,
+                settings_open: false,
+                settings_load_failed: false,
+                selected_ids: BTreeSet::from(["main-panel-color".to_owned()]),
+                expanded_patch_ids: BTreeSet::new(),
+                expanded_area_ids: BTreeSet::new(),
+                plan: None,
+                busy: false,
+                error: None,
+                status: "Test".into(),
+                show_diff: false,
+                confirm_unverified: false,
+                confirm_root_recovery: false,
+                confirm_refresh: false,
+                deployment_status: "Not applied".into(),
+                refresh_status: "Not restarted".into(),
+                visual_result: "Not checked".into(),
+            }
+        });
+        window_cx.simulate_resize(size(px(1568.0), px(2400.0)));
+        window_cx.run_until_parked();
+
+        assert!(window_cx.debug_bounds("expand-all-areas").is_some());
+        assert!(window_cx.debug_bounds("select-all-tweaks").is_some());
+        assert!(window_cx.debug_bounds("tweak-selection-partial").is_some());
+        let quick_settings_top = window_cx
+            .debug_bounds("patch-area-quick-settings")
+            .expect("Quick Settings area should be rendered")
+            .origin
+            .y;
+        for selector in ["expand-all-areas", "select-all-tweaks"] {
+            let button = window_cx
+                .debug_bounds(selector)
+                .expect("bulk action button should be rendered");
+            assert!(
+                button.origin.y + button.size.height <= quick_settings_top,
+                "bulk action buttons should appear above the tweak groupings",
+            );
+        }
+        let quick_settings_collapsed_height = window_cx
+            .debug_bounds("patch-area-quick-settings")
+            .expect("Quick Settings area should be rendered")
+            .size
+            .height;
+        let input_picker_collapsed_height = window_cx
+            .debug_bounds("patch-area-input-picker")
+            .expect("Input Picker area should be rendered")
+            .size
+            .height;
+
+        let expand_all = window_cx
+            .debug_bounds("expand-all-areas")
+            .expect("Expand all areas button should be available");
+        window_cx.simulate_click(expand_all.center(), gpui::Modifiers::default());
+        window_cx.run_until_parked();
+        assert!(window_cx.debug_bounds("close-all-areas").is_some());
+        assert!(
+            window_cx
+                .debug_bounds("patch-select-input-screen-backdrop")
+                .is_some(),
+            "Expand all should open the Input Picker area",
+        );
+        let quick_settings_expanded_height = window_cx
+            .debug_bounds("patch-area-quick-settings")
+            .expect("Quick Settings area should remain rendered")
+            .size
+            .height;
+        let input_picker_expanded_height = window_cx
+            .debug_bounds("patch-area-input-picker")
+            .expect("Input Picker area should remain rendered")
+            .size
+            .height;
+        assert!(quick_settings_expanded_height > quick_settings_collapsed_height);
+        assert!(input_picker_expanded_height > input_picker_collapsed_height);
+
+        let close_all = window_cx
+            .debug_bounds("close-all-areas")
+            .expect("Close all areas button should be available");
+        window_cx.simulate_click(close_all.center(), gpui::Modifiers::default());
+        window_cx.run_until_parked();
+        assert!(
+            window_cx
+                .debug_bounds("patch-area-quick-settings")
+                .expect("Quick Settings area should remain rendered")
+                .size
+                .height
+                < quick_settings_expanded_height,
+        );
+        assert!(
+            window_cx
+                .debug_bounds("patch-area-input-picker")
+                .expect("Input Picker area should remain rendered")
+                .size
+                .height
+                < input_picker_expanded_height,
+        );
+
+        let select_all = window_cx
+            .debug_bounds("select-all-tweaks")
+            .expect("Select all tweaks button should be available");
+        window_cx.simulate_click(select_all.center(), gpui::Modifiers::default());
+        window_cx.run_until_parked();
+        assert!(window_cx.debug_bounds("deselect-all-tweaks").is_some());
+        assert!(window_cx.debug_bounds("tweak-selection-all").is_some(),);
+
+        let deselect_all = window_cx
+            .debug_bounds("deselect-all-tweaks")
+            .expect("Deselect all tweaks button should be available");
+        window_cx.simulate_click(deselect_all.center(), gpui::Modifiers::default());
+        window_cx.run_until_parked();
+        assert!(window_cx.debug_bounds("tweak-selection-none").is_some());
+    }
+    #[gpui::test]
     async fn appearance_settings_save_with_connection_port(cx: &TestAppContext) {
         let mut app_cx = (*cx).clone();
         let (_view, window_cx) = app_cx.add_window_view(|_, cx| {
@@ -1423,6 +1689,7 @@ mod visual_layout_tests {
                 settings_load_failed: false,
                 selected_ids: BTreeSet::new(),
                 expanded_patch_ids: BTreeSet::new(),
+                expanded_area_ids: BTreeSet::new(),
                 plan: None,
                 busy: false,
                 error: None,
@@ -1477,6 +1744,7 @@ mod visual_layout_tests {
                 settings_open: false,
                 settings_load_failed: false,
                 selected_ids: BTreeSet::new(),
+                expanded_area_ids: BTreeSet::new(),
                 expanded_patch_ids: BTreeSet::new(),
                 plan: None,
                 busy: false,
