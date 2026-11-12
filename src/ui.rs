@@ -13,6 +13,10 @@ use crate::deploy::{self, DeploymentPlan};
 use crate::patches::{PATCHES, PatchSpec, TARGETS};
 use crate::text_input::{self, LineInput};
 const DEPLOY_SUCCESS: &str = "Installed/updated; all target mounts and backup manifest verified";
+#[cfg(target_os = "macos")]
+const AUTHENTICATION_GUIDANCE: &str = "Authentication uses your SSH agent/key or a macOS password prompt when OpenSSH requests one. Passwords and private-key contents are never saved.";
+#[cfg(not(target_os = "macos"))]
+const AUTHENTICATION_GUIDANCE: &str = "Authentication uses your SSH agent/key. Interactive password prompts are supported only on macOS. Passwords and private-key contents are never saved.";
 
 pub fn run(config_path: Option<PathBuf>) {
     Application::new().run(move |cx: &mut App| {
@@ -61,6 +65,12 @@ impl SettingsFile {
         match self {
             Self::Managed(path) => config::save(path, settings),
             Self::Explicit(path) => config::save_at(path, settings),
+        }
+    }
+    fn location_description(&self) -> String {
+        match self {
+            Self::Managed(path) => format!("Default settings file: {}", path.display()),
+            Self::Explicit(path) => format!("Custom settings file: {}", path.display()),
         }
     }
 }
@@ -311,6 +321,7 @@ impl AppView {
         let config = self.config.clone();
         let confirmed = self.confirm_unverified;
         let root_recovery_confirmed = self.confirm_root_recovery;
+        let deployment_summary = deploy::deployment_success_summary(plan.selected_labels.len());
         self.busy = true;
         self.error = None;
         self.status = format!(
@@ -326,7 +337,9 @@ impl AppView {
                 this.busy = false;
                 match result {
                     Ok(()) => {
-                        this.status = "Deployment succeeded. Both overlay mounts are active, retired targets are unmounted, and original hashes plus the backup manifest verified; display refresh is still pending.".into();
+                        this.status = format!(
+                            "Deployment succeeded. {deployment_summary}. Retired targets are unmounted; original hashes verified. Display refresh is still pending."
+                        );
                         this.deployment_status = DEPLOY_SUCCESS.into();
                         this.refresh_status = "Pending owner approval".into();
                         this.confirm_refresh = false;
@@ -352,6 +365,10 @@ impl AppView {
             return;
         }
         let config = self.config.clone();
+        let selected_edits = self
+            .plan
+            .as_ref()
+            .map_or(0, |plan| plan.selected_labels.len());
         self.busy = true;
         self.error = None;
         self.status =
@@ -366,7 +383,11 @@ impl AppView {
                 this.busy = false;
                 match result {
                     Ok(()) => {
-                        this.status = "Display service restarted; all overlay mounts remain active and retired target paths remain unmounted. Check Quick Settings and Input Picker visually on the TV.".into();
+                        this.status = format!(
+                            "Display service restarted; edits applied: {selected_edits}/{}; target mounts active: {}. Retired target paths remain unmounted. Check Quick Settings and Input Picker visually on the TV.",
+                            PATCHES.len(),
+                            TARGETS.len(),
+                        );
                         this.refresh_status = "Restarted; owner visual check pending".into();
                     }
                     Err(error) => {
@@ -382,7 +403,19 @@ impl AppView {
 
     fn report(&self) -> String {
         match &self.plan {
-            Some(plan) => deploy::manual_report(plan, &self.deployment_status, &self.refresh_status, &self.visual_result),
+            Some(plan) => {
+                let deployment = if self.deployment_status == DEPLOY_SUCCESS {
+                    deploy::deployment_success_summary(plan.selected_labels.len())
+                } else {
+                    self.deployment_status.clone()
+                };
+                deploy::manual_report(
+                    plan,
+                    &deployment,
+                    &self.refresh_status,
+                    &self.visual_result,
+                )
+            }
             None => "Midnight UI Patcher report\nNo device inspection completed.\nVisual check: Not checked\n".into(),
         }
     }
@@ -413,6 +446,10 @@ impl Render for AppView {
             && (!unverified || self.confirm_unverified)
             && self.deployment_status != DEPLOY_SUCCESS;
         let report = self.report();
+        let deployment_summary = self
+            .plan
+            .as_ref()
+            .map(|plan| deploy::deployment_success_summary(plan.selected_labels.len()));
 
         div()
             .id("main-scroll")
@@ -430,10 +467,15 @@ impl Render for AppView {
             .child(
                 div().flex().flex_col().gap_2().p_3().bg(rgb(0x22252b)).rounded_md()
                     .when(self.settings_open, |card| {
+                        let settings_location = self
+                            .settings_file
+                            .as_ref()
+                            .map(SettingsFile::location_description)
+                            .unwrap_or_else(|| "Settings file location unavailable".to_owned());
                         card.child(
                             div().flex().flex_wrap().items_center().gap_2()
                                 .child(div().text_lg().font_weight(gpui::FontWeight::BOLD).child("Connection settings"))
-                                .child(div().debug_selector(|| "connection-settings-explainer".to_owned()).flex_1().min_w_0().text_sm().text_color(rgb(0xb7bbc2)).child("Saved locally outside the repository. Use an OpenSSH alias (including ProxyJump) or root@TV_IP. Passwords and private-key contents are never saved."))
+                                .child(div().debug_selector(|| "connection-settings-explainer".to_owned()).flex_1().min_w_0().text_sm().text_color(rgb(0xb7bbc2)).child(format!("{settings_location}. Use an OpenSSH alias (including ProxyJump) or root@TV_IP. {AUTHENTICATION_GUIDANCE}")))
                         )
                             .child(settings_field("SSH target", "Use root@TV_IP or an OpenSSH host alias.", self.settings_fields.ssh_target.clone()))
                             .child(settings_field("OpenSSH config file (optional)", "Custom config for aliases and ProxyJump; blank uses the SSH client's default.", self.settings_fields.ssh_config_file.clone()))
@@ -461,7 +503,7 @@ impl Render for AppView {
                         card.child(div().child(format!("SSH target: {target}")))
                             .child(div().child(format!("Model: {}", if self.config.model.is_empty() { "(not supplied)" } else { &self.config.model })))
                             .child(div().child(format!("Firmware label: {firmware}")))
-                            .child(div().text_sm().text_color(rgb(0xb7bbc2)).child("Authentication uses your SSH agent/key or a one-time macOS prompt. Passwords are never saved."))
+                            .child(div().text_sm().text_color(rgb(0xb7bbc2)).child(AUTHENTICATION_GUIDANCE))
                             .child(
                                 div().px_3().py_2().bg(rgb(0x343944)).rounded_md().cursor_pointer()
                                     .id("edit-settings")
@@ -506,7 +548,11 @@ impl Render for AppView {
                             this.deployment_status = "Not applied".into();
                             this.refresh_status = "Not restarted".into();
                             this.visual_result = "Not checked".into();
-                            this.status = "No edits selected. Select at least one before inspection.".into();
+                            this.status = format!(
+                                "{}/{} edits selected. Select at least one before inspection.",
+                                this.selected_ids.len(),
+                                PATCHES.len(),
+                            );
                             cx.notify();
                         }))
                         .child("Clear all"),
@@ -518,12 +564,17 @@ impl Render for AppView {
             })
             .when_some(self.plan.as_ref(), |element, plan| {
                 let selected_list = plan.selected_labels.iter().map(|label| format!("• {label}")).collect::<Vec<_>>().join("\n");
+                let apply_label = if self.busy {
+                    "Working…".to_owned()
+                } else {
+                    format!("Apply selected edits ({})", plan.selected_labels.len())
+                };
                 element.child(
                     div().flex().flex_col().gap_2().p_3().bg(rgb(0x202a24)).rounded_md()
                         .child(div().text_lg().font_weight(gpui::FontWeight::BOLD).child("Pre-install summary"))
                         .child(div().child(format!("Action: {}", plan.mode.label())))
                         .child(div().child(format!("Source check: all {} fetched files parsed; all {} structural patch sites matched.", TARGETS.len(), plan.structurally_verified)))
-                        .child(div().child(format!("Selected edits:\n{selected_list}")))
+                        .child(div().child(format!("Selected edits ({}/{}):\n{selected_list}", plan.selected_labels.len(), PATCHES.len())))
                         .child(div().text_color(rgb(0xf0d28a)).child(plan.compatibility_warning()))
                         .child(div().text_sm().text_color(rgb(0xb7bbc2)).child("Apply preserves the original backups and current overlay. It updates state under /var/lib/webosbrew and creates/removes bind mounts; it does not overwrite QML files in /usr or flash firmware. The service refresh is a separate action."))
                         .child(
@@ -555,7 +606,7 @@ impl Render for AppView {
                             div().px_3().py_2().bg(if can_apply { rgb(0x25634a) } else { rgb(0x383a3d) }).rounded_md()
                                 .id("apply-selected-edits")
                                 .when(can_apply, |button| button.cursor_pointer().on_click(cx.listener(|this, _, _, cx| this.deploy(cx))))
-                                .child(if self.busy { "Working…" } else { "Apply selected edits" }),
+                                .child(apply_label),
                         ),
                 )
             })
@@ -564,7 +615,7 @@ impl Render for AppView {
                     div().flex().flex_col().gap_2().p_3().bg(rgb(0x22252b)).rounded_md()
                         .child(div().text_lg().font_weight(gpui::FontWeight::BOLD).child("Display refresh (separate approval)"))
                         .child(div().text_color(rgb(0xf0d28a)).child("Restarting surface-manager-daemon.service may interrupt the TV UI. Nothing is restarted automatically."))
-                        .child(div().child(format!("Deployment: {}", self.deployment_status)))
+                        .child(div().child(format!("Deployment: {}", deployment_summary.as_deref().unwrap_or(self.deployment_status.as_str()))))
                         .child(div().child(format!("Refresh: {}", self.refresh_status)))
                         .child(
                             div().flex().items_center().gap_2().cursor_pointer()
@@ -621,7 +672,11 @@ fn patch_row(patch: &'static PatchSpec, selected: bool, cx: &Context<AppView>) -
             this.deployment_status = "Not applied".into();
             this.confirm_root_recovery = false;
             this.refresh_status = "Not restarted".into();
-            this.status = "Patch selection changed; inspect the TV again to validate and preview this selection.".into();
+            this.status = format!(
+                "{}/{} edits selected; inspect the TV again to validate and preview this selection.",
+                this.selected_ids.len(),
+                PATCHES.len(),
+            );
             this.visual_result = "Not checked".into();
             cx.notify();
         }))
@@ -722,6 +777,14 @@ mod visual_layout_tests {
 
         let (store, loaded, error) = SettingsFile::load(Some(path.clone()));
         assert!(error.is_none());
+        assert_eq!(
+            store.as_ref().unwrap().location_description(),
+            format!("Custom settings file: {}", path.display())
+        );
+        assert_eq!(
+            SettingsFile::Managed(PathBuf::from("default/config.toml")).location_description(),
+            "Default settings file: default/config.toml"
+        );
         assert_eq!(loaded.ssh_config_file, "before/ssh_config");
         let mut edited = loaded;
         edited.ssh_config_file = "after/ssh_config".into();

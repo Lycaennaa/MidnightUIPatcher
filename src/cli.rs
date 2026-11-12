@@ -13,7 +13,6 @@ use midnight_ui_patcher::deploy::{self, DeploymentPlan};
 use midnight_ui_patcher::patcher::{PatchError, patch_qml, selected_patch_ids};
 use midnight_ui_patcher::patches::{PATCHES, TARGETS};
 
-const DEPLOY_SUCCESS: &str = "Installed/updated; all target mounts and backup manifest verified";
 const DEPLOY_REFRESH_PENDING: &str = "Pending owner approval";
 
 #[derive(Debug, Parser)]
@@ -200,11 +199,11 @@ enum ReportDeployment {
 }
 
 impl ReportDeployment {
-    fn label(self) -> &'static str {
+    fn label(self, selected_edits: usize) -> String {
         match self {
-            Self::NotApplied => "Not applied",
-            Self::Succeeded => DEPLOY_SUCCESS,
-            Self::FailedOrUncertain => "Failed or uncertain",
+            Self::NotApplied => "Not applied".to_owned(),
+            Self::Succeeded => deploy::deployment_success_summary(selected_edits),
+            Self::FailedOrUncertain => "Failed or uncertain".to_owned(),
         }
     }
 }
@@ -610,14 +609,19 @@ fn apply(args: ApplyArgs, config_path: Option<&Path>) -> Result<CommandResult, C
         args.confirm_root_recovery,
     ) {
         Ok(()) => {
-            let report =
-                deploy::manual_report(&plan, DEPLOY_SUCCESS, DEPLOY_REFRESH_PENDING, "Not checked");
+            let deployment_summary = deploy::deployment_success_summary(plan.selected_labels.len());
+            let report = deploy::manual_report(
+                &plan,
+                &deployment_summary,
+                DEPLOY_REFRESH_PENDING,
+                "Not checked",
+            );
             let mut data = data;
             data["deployment"] = json!("succeeded");
             data["display_refresh"] = json!("pending_owner_approval");
             data["report"] = json!(report);
             let text = format!(
-                "{summary}Deployment succeeded; all target mounts and the backup manifest verified.\nDisplay refresh is still pending separate owner approval.\n\n{report}"
+                "{summary}Deployment succeeded. {deployment_summary}.\nDisplay refresh is still pending separate owner approval.\n\n{report}"
             );
             Ok(CommandResult { text, data })
         }
@@ -682,7 +686,7 @@ fn run_report(
             .map(|_| settings.firmware_label.as_str()),
         &selected_labels,
         args.structurally_verified,
-        args.deployment.label(),
+        &args.deployment.label(selected_labels.len()),
         args.refresh.label(),
         args.visual_result.label(),
     );
@@ -691,7 +695,7 @@ fn run_report(
         data: json!({
             "report": report,
             "structurally_verified": args.structurally_verified,
-            "deployment": args.deployment.label(),
+            "deployment": args.deployment.label(selected_labels.len()),
             "display_refresh": args.refresh.label(),
             "visual_result": args.visual_result.label(),
         }),
@@ -791,13 +795,15 @@ fn plan_value(plan: &DeploymentPlan, fingerprint: &str, include_diff: bool) -> V
 
 fn format_plan(plan: &DeploymentPlan, fingerprint: &str, include_diff: bool) -> String {
     let mut text = format!(
-        "Action: {}\nSource check: fetched {} target files; {} of {} patch sites matched.\nModel: {}\nFirmware: {}\nSelected edits:\n",
+        "Action: {}\nSource check: fetched {} target files; {} of {} patch sites matched.\nModel: {}\nFirmware: {}\nSelected edits ({}/{}):\n",
         plan.mode.label(),
         TARGETS.len(),
         plan.structurally_verified,
         PATCHES.len(),
         shown(&plan.model),
         shown(&plan.firmware_label),
+        plan.selected_labels.len(),
+        PATCHES.len(),
     );
     if plan.selected_ids.is_empty() {
         text.push_str("  (none)\n");
@@ -960,6 +966,18 @@ mod tests {
             structurally_verified: PATCHES.len(),
         }
     }
+    #[test]
+    fn format_plan_reports_selected_edit_count_dynamically() {
+        let mut plan = sample_plan();
+        let one_selected = format_plan(&plan, "fingerprint", false);
+        assert!(one_selected.contains(&format!("Selected edits (1/{}):", PATCHES.len())));
+
+        let second_patch = &PATCHES[1];
+        plan.selected_ids.insert(second_patch.id.to_owned());
+        plan.selected_labels.push(second_patch.label);
+        let two_selected = format_plan(&plan, "fingerprint", false);
+        assert!(two_selected.contains(&format!("Selected edits (2/{}):", PATCHES.len())));
+    }
 
     #[test]
     fn config_set_updates_requested_values_and_preserves_the_rest() {
@@ -1033,9 +1051,15 @@ mod tests {
 
         assert!(result.text.contains("Model: OLED55"));
         assert!(result.text.contains("- Set panel backdrop color to black"));
-        assert!(result.text.contains(
-            "Deployment: Installed/updated; all target mounts and backup manifest verified"
-        ));
+        assert!(result.text.contains(&format!(
+            "Deployment: {}",
+            deploy::deployment_success_summary(1)
+        )));
+        assert!(
+            result
+                .text
+                .contains(&format!("Selected edits (1/{}):", PATCHES.len()))
+        );
         assert!(
             result
                 .text

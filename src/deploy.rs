@@ -479,6 +479,14 @@ pub fn manual_report(
     )
 }
 
+pub fn deployment_success_summary(applied_edits: usize) -> String {
+    format!(
+        "Edits applied: {applied_edits}/{}; target mounts verified: {}; backup manifest verified",
+        PATCHES.len(),
+        TARGETS.len(),
+    )
+}
+
 pub fn manual_report_for(
     model: Option<&str>,
     firmware_label: Option<&str>,
@@ -488,21 +496,22 @@ pub fn manual_report_for(
     refresh: &str,
     visual_result: &str,
 ) -> String {
-    let Some(structurally_verified) = structurally_verified else {
-        return format!(
-            "Midnight UI Patcher report\nNo device inspection completed.\nVisual check: {visual_result}\n"
-        );
-    };
-    let model = safe_report_value(model.unwrap_or_default());
-    let firmware = safe_report_value(firmware_label.unwrap_or_default());
+    let selected_count = selected_labels.len();
+    let total_edits = PATCHES.len();
     let patch_lines = selected_labels
         .iter()
         .map(|label| format!("- {}", safe_report_value(label)))
         .collect::<Vec<_>>()
         .join("\n");
+    let Some(structurally_verified) = structurally_verified else {
+        return format!(
+            "Midnight UI Patcher report\nNo device inspection completed.\nSelected edits ({selected_count}/{total_edits}):\n{patch_lines}\nVisual check: {visual_result}\n"
+        );
+    };
+    let model = safe_report_value(model.unwrap_or_default());
+    let firmware = safe_report_value(firmware_label.unwrap_or_default());
     format!(
-        "Midnight UI Patcher report\nModel: {model}\nFirmware label: {firmware}\nStructural checks: {structurally_verified}/{} patch sites matched\nSelected edits:\n{patch_lines}\nDeployment: {deployment}\nDisplay refresh: {refresh}\nVisual check: {visual_result}\n",
-        PATCHES.len(),
+        "Midnight UI Patcher report\nModel: {model}\nFirmware label: {firmware}\nStructural checks: {structurally_verified}/{total_edits} patch sites matched\nSelected edits ({selected_count}/{total_edits}):\n{patch_lines}\nDeployment: {deployment}\nDisplay refresh: {refresh}\nVisual check: {visual_result}\n"
     )
 }
 
@@ -1072,6 +1081,32 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         assert_eq!(target_script_command(), format!("sh -s -- {arguments}"));
+    }
+    #[test]
+    fn deployment_and_report_summaries_show_selected_edit_counts() {
+        assert!(
+            deployment_success_summary(1).contains(&format!("Edits applied: 1/{}", PATCHES.len()))
+        );
+        assert!(
+            deployment_success_summary(2).contains(&format!("Edits applied: 2/{}", PATCHES.len()))
+        );
+        assert!(
+            deployment_success_summary(2)
+                .contains(&format!("target mounts verified: {}", TARGETS.len()))
+        );
+
+        let labels = ["First edit", "Second edit"];
+        let report = manual_report_for(
+            None,
+            None,
+            &labels,
+            None,
+            "Not applied",
+            "Not restarted",
+            "Not checked",
+        );
+        assert!(report.contains(&format!("Selected edits (2/{}):", PATCHES.len())));
+        assert!(report.contains("- First edit\n- Second edit"));
     }
 
     fn manifest_validator_script(source: &str, minimum_depth: u8) -> String {
