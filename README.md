@@ -12,21 +12,26 @@ This repo does not distribute the QML files or generated bundles.
 
 `cargo run` opens the GUI. Use `cargo run -- --help` for the progressively disclosed CLI; top-level help lists the main command groups, and each group has focused subcommand help.
 
-Both interfaces use the same local connection settings and deployment logic. Settings accept a root SSH target or OpenSSH alias, optional port, private-key path, and custom OpenSSH config file path, plus optional model and firmware labels. These settings are stored in the user-local config; passwords and key contents are never saved.
+Both interfaces use the same local connection settings, saved appearance choices, and deployment logic. Connection settings and appearance options are stored in the user-local config; passwords and key contents are never saved.
 
 ### CLI
 
 ```sh
 cargo run -- config set --ssh-target my-tv --ssh-config-file ~/.ssh/config
-cargo run -- patches list
-cargo run -- --format json device inspect
+cargo run -- config set --patch-option 'input-tile-text-color=#FF0000'
+cargo run -- --format json patches list
+cargo run -- --format json device inspect --patch-option 'input-tile-text-color=#00AACC'
 ```
 Replace `my-tv` with an alias configured in the selected OpenSSH config.
 Use `--ssh-config-file PATH` when the alias is in a non-default OpenSSH config; blank uses OpenSSH's default config.
 
-Inspection is read-only: it checks the live hook, lock, mounts, hashes, and backups, fetches the eight Quick Settings and Input Picker QML files over root SSH, and validates every known patch site. Review the summary and fingerprint; add `--diff` to explicitly include the raw QML diff. All edits are selected by default. Repeat `--patch ID` to select specific edits or use `--exclude ID` to omit edits.
+`patches list` reports configurable option keys and defaults. Repeat `--patch-option KEY=VALUE` on `device inspect` or `device apply` to override saved values for that command; omitted keys use saved config. Add `--save-options` to persist supplied overrides before SSH/device work, or use `config set --patch-option KEY=VALUE` to save without contacting the TV. Temporary overrides must be repeated on apply to reproduce the inspected plan and on `report` to include those values in the status report; report overrides are not saved.
 
-Apply re-inspects the TV and refuses to deploy if the source, selection, connection settings, or resulting plan differs from the reviewed fingerprint. Replace the placeholder with `plan_fingerprint` from inspection:
+Colors accept Qt hex `#RRGGBB` or alpha-first `#AARRGGBB`; the GUI keeps each tweak's option editor collapsed by default and provides hex entry inside it. Panel/icon opacity accepts 0–1 and selected-border width accepts 0–100. Invalid values are rejected rather than inserted into QML.
+
+Inspection does not change TV state; `--save-options` can write the local config. Inspection checks the live hook, lock, mounts, hashes, and backups, fetches the eight Quick Settings and Input Picker QML files over root SSH, and validates every known patch site. Review the summary and fingerprint; add `--diff` to explicitly include the raw QML diff. All edits are selected by default. Repeat `--patch ID` to select specific edits or use `--exclude ID` to omit edits.
+
+Apply re-inspects the TV and refuses to deploy if the source, selection, connection settings, appearance options, or resulting plan differs from the reviewed fingerprint. Replace the placeholder with `plan_fingerprint` from inspection:
 
 ```sh
 cargo run -- device apply --expect-plan-fingerprint sha256:PASTE_FINGERPRINT --confirm-root-recovery --confirm-unverified
@@ -43,7 +48,7 @@ Text mode writes results to stdout and errors to stderr. `--format json` writes 
 
 ### GUI
 
-Select edits and inspect the TV. Review the pre-install summary and optional raw diff. Structurally compatible but unverified firmware requires an explicit warning confirmation. Applying also requires confirming root SSH recovery is available.
+Select edits and inspect the TV. Edit connection and appearance settings to choose preset colors or enter hex, adjust opacity and border width, and reset appearance defaults. Save settings to persist them. Review the pre-install summary and optional raw diff. Structurally compatible but unverified firmware requires an explicit warning confirmation. Applying also requires confirming root SSH recovery is available.
 
 The theme updates state in `/var/lib/webosbrew`; it does not write QML files into `/usr`, flash firmware, or install an IPK. A display-service restart can interrupt the TV UI. Visually check Quick Settings and the Input Picker after a refresh; successful deployment is not visual verification.
 

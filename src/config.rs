@@ -1,3 +1,5 @@
+use crate::patches::{PatchOptionError, PatchOptions};
+
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -15,8 +17,8 @@ ssh_target = ""
 model = ""
 firmware_label = ""
 identity_file = ""
-ssh_config_file = ""
 port = 0
+# patch_options defaults are configurable in the GUI or with `config set --patch-option KEY=VALUE`.
 "#;
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -28,6 +30,7 @@ pub struct UserConfig {
     pub firmware_label: String,
     pub identity_file: String,
     pub port: u16,
+    pub patch_options: PatchOptions,
     #[serde(flatten)]
     pub(crate) extra: std::collections::BTreeMap<String, toml::Value>,
 }
@@ -46,6 +49,8 @@ pub enum ConfigError {
     InvalidTarget,
     #[error("invalid {0}; use at most 160 printable characters")]
     InvalidField(&'static str),
+    #[error(transparent)]
+    PatchOptions(#[from] PatchOptionError),
 }
 
 pub fn config_path() -> Result<PathBuf, ConfigError> {
@@ -179,6 +184,7 @@ pub fn validate(config: &UserConfig) -> Result<(), ConfigError> {
             return Err(ConfigError::InvalidField(name));
         }
     }
+    config.patch_options.validate()?;
     Ok(())
 }
 
@@ -318,6 +324,7 @@ mod tests {
         let config: UserConfig = toml::from_str("ssh_target = \"lg-tv\"\n").unwrap();
         assert!(config.ssh_config_file.is_empty());
         assert_eq!(ssh_config_path(&config), None);
+        assert_eq!(config.patch_options.input_tile_text_color, "#FF0000");
     }
 
     #[test]

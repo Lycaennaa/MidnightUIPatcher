@@ -1,0 +1,458 @@
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PatchOptionKind {
+    Color,
+    Opacity,
+    RelativeWidth,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PatchOption {
+    MainPanelColor,
+    MainPanelOpacity,
+    MenuPopupColor,
+    ButtonDefaultColor,
+    ButtonIdleFill,
+    InputTileBackgroundColor,
+    InputTileIconOpacity,
+    InputTileTextColor,
+    InputTileBorderColor,
+    InputTileBorderWidth,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum PatchOptionQmlFormat {
+    Direct,
+    CurrentInputColor,
+    CurrentInputWidth,
+}
+
+impl PatchOptionQmlFormat {
+    fn apply(self, value: String) -> String {
+        match self {
+            Self::Direct => value,
+            Self::CurrentInputColor => {
+                format!("entry.currentInput ? {value} : \"transparent\"")
+            }
+            Self::CurrentInputWidth => {
+                format!("entry.currentInput ? styler.getRelativeValue({value}) : 0")
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PatchOptionSpec {
+    pub id: &'static str,
+    pub patch_id: &'static str,
+    pub label: &'static str,
+    pub help: &'static str,
+    pub kind: PatchOptionKind,
+    pub default: &'static str,
+    option: PatchOption,
+    qml_format: PatchOptionQmlFormat,
+}
+
+pub const PATCH_OPTION_SPECS: [PatchOptionSpec; 10] = [
+    PatchOptionSpec {
+        id: "main-panel-color",
+        patch_id: "main-panel-color",
+        label: "Panel backdrop color",
+        help: "The Quick Settings panel background color.",
+        kind: PatchOptionKind::Color,
+        default: "#000000",
+        option: PatchOption::MainPanelColor,
+        qml_format: PatchOptionQmlFormat::Direct,
+    },
+    PatchOptionSpec {
+        id: "main-panel-opacity",
+        patch_id: "main-panel-opacity",
+        label: "Panel backdrop opacity",
+        help: "From 0 (transparent) to 1 (fully opaque).",
+        kind: PatchOptionKind::Opacity,
+        default: "1",
+        option: PatchOption::MainPanelOpacity,
+        qml_format: PatchOptionQmlFormat::Direct,
+    },
+    PatchOptionSpec {
+        id: "menu-popup-color",
+        patch_id: "menu-popup-color",
+        label: "Menu popup color",
+        help: "The menu popup background color.",
+        kind: PatchOptionKind::Color,
+        default: "#000000",
+        option: PatchOption::MenuPopupColor,
+        qml_format: PatchOptionQmlFormat::Direct,
+    },
+    PatchOptionSpec {
+        id: "button-default-color",
+        patch_id: "button-default-color",
+        label: "Tile default fill",
+        help: "The default Quick Settings tile fill color.",
+        kind: PatchOptionKind::Color,
+        default: "#000000",
+        option: PatchOption::ButtonDefaultColor,
+        qml_format: PatchOptionQmlFormat::Direct,
+    },
+    PatchOptionSpec {
+        id: "button-idle-fill",
+        patch_id: "button-idle-fill",
+        label: "Tile idle fill",
+        help: "Idle tile fill only; focus and disabled colors stay unchanged.",
+        kind: PatchOptionKind::Color,
+        default: "#000000",
+        option: PatchOption::ButtonIdleFill,
+        qml_format: PatchOptionQmlFormat::Direct,
+    },
+    PatchOptionSpec {
+        id: "input-tile-background-color",
+        patch_id: "input-tile-background",
+        label: "Input tile background",
+        help: "Defaults to transparent; choose an opaque or translucent fill if desired.",
+        kind: PatchOptionKind::Color,
+        default: "#00000000",
+        option: PatchOption::InputTileBackgroundColor,
+        qml_format: PatchOptionQmlFormat::Direct,
+    },
+    PatchOptionSpec {
+        id: "input-tile-icon-opacity",
+        patch_id: "input-tile-icons",
+        label: "Input tile icon opacity",
+        help: "From 0 (hidden) to 1 (fully opaque). The current-input marker remains hidden.",
+        kind: PatchOptionKind::Opacity,
+        default: "0",
+        option: PatchOption::InputTileIconOpacity,
+        qml_format: PatchOptionQmlFormat::Direct,
+    },
+    PatchOptionSpec {
+        id: "input-tile-text-color",
+        patch_id: "input-tile-red-text",
+        label: "Input tile text color",
+        help: "Color used for device and port labels.",
+        kind: PatchOptionKind::Color,
+        default: "#FF0000",
+        option: PatchOption::InputTileTextColor,
+        qml_format: PatchOptionQmlFormat::Direct,
+    },
+    PatchOptionSpec {
+        id: "input-tile-border-color",
+        patch_id: "input-tile-border",
+        label: "Selected input border color",
+        help: "The border color for the currently selected input; other inputs remain transparent.",
+        kind: PatchOptionKind::Color,
+        default: "#FFFFFFFF",
+        option: PatchOption::InputTileBorderColor,
+        qml_format: PatchOptionQmlFormat::CurrentInputColor,
+    },
+    PatchOptionSpec {
+        id: "input-tile-border-width",
+        patch_id: "input-tile-border",
+        label: "Selected input border width",
+        help: "Relative width from 0 to 100; non-selected inputs remain borderless.",
+        kind: PatchOptionKind::RelativeWidth,
+        default: "1",
+        option: PatchOption::InputTileBorderWidth,
+        qml_format: PatchOptionQmlFormat::CurrentInputWidth,
+    },
+];
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PatchOptions {
+    pub main_panel_color: String,
+    pub main_panel_opacity: f64,
+    pub menu_popup_color: String,
+    pub button_default_color: String,
+    pub button_idle_fill: String,
+    pub input_tile_background_color: String,
+    pub input_tile_icon_opacity: f64,
+    pub input_tile_text_color: String,
+    pub input_tile_border_color: String,
+    pub input_tile_border_width: f64,
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum PatchOptionError {
+    #[error("unknown patch option `{0}`")]
+    UnknownOption(String),
+    #[error("patch option `{name}` must be #RRGGBB or Qt-style #AARRGGBB hex")]
+    InvalidColor { name: &'static str },
+    #[error("patch option `{name}` must be a finite number from {range}")]
+    InvalidNumber {
+        name: &'static str,
+        range: &'static str,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum PatchOptionValue<'a> {
+    Color(&'a str),
+    Number(f64),
+}
+
+enum ParsedPatchOptionValue {
+    Color(String),
+    Number(f64),
+}
+
+impl PatchOptionKind {
+    fn numeric_range(self) -> (f64, f64, &'static str) {
+        match self {
+            Self::Opacity => (0.0, 1.0, "0 to 1"),
+            Self::RelativeWidth => (0.0, 100.0, "0 to 100"),
+            Self::Color => unreachable!("color options do not have numeric bounds"),
+        }
+    }
+
+    fn parse(
+        self,
+        name: &'static str,
+        value: &str,
+    ) -> Result<ParsedPatchOptionValue, PatchOptionError> {
+        match self {
+            Self::Color => Ok(ParsedPatchOptionValue::Color(parse_color(name, value)?)),
+            Self::Opacity | Self::RelativeWidth => {
+                let (min, max, range) = self.numeric_range();
+                Ok(ParsedPatchOptionValue::Number(parse_number(
+                    name, value, min, max, range,
+                )?))
+            }
+        }
+    }
+
+    fn validate(
+        self,
+        name: &'static str,
+        value: PatchOptionValue<'_>,
+    ) -> Result<(), PatchOptionError> {
+        match (self, value) {
+            (Self::Color, PatchOptionValue::Color(value)) => {
+                if is_qt_hex_color(value) {
+                    Ok(())
+                } else {
+                    Err(PatchOptionError::InvalidColor { name })
+                }
+            }
+            (Self::Opacity | Self::RelativeWidth, PatchOptionValue::Number(value)) => {
+                let (min, max, range) = self.numeric_range();
+                validate_number(name, value, min, max, range)
+            }
+            _ => unreachable!("patch option kind must match its stored value"),
+        }
+    }
+
+    fn display(self, value: PatchOptionValue<'_>) -> String {
+        match (self, value) {
+            (Self::Color, PatchOptionValue::Color(value)) => value.to_owned(),
+            (Self::Opacity | Self::RelativeWidth, PatchOptionValue::Number(value)) => {
+                qml_number(value)
+            }
+            _ => unreachable!("patch option kind must match its stored value"),
+        }
+    }
+
+    fn qml_value(self, value: PatchOptionValue<'_>) -> String {
+        match (self, value) {
+            (Self::Color, PatchOptionValue::Color(value)) => qml_color(value),
+            (Self::Opacity | Self::RelativeWidth, PatchOptionValue::Number(value)) => {
+                qml_number(value)
+            }
+            _ => unreachable!("patch option kind must match its stored value"),
+        }
+    }
+}
+
+impl Default for PatchOptions {
+    fn default() -> Self {
+        Self {
+            main_panel_color: default_color(PatchOption::MainPanelColor),
+            main_panel_opacity: default_number(PatchOption::MainPanelOpacity),
+            menu_popup_color: default_color(PatchOption::MenuPopupColor),
+            button_default_color: default_color(PatchOption::ButtonDefaultColor),
+            button_idle_fill: default_color(PatchOption::ButtonIdleFill),
+            input_tile_background_color: default_color(PatchOption::InputTileBackgroundColor),
+            input_tile_icon_opacity: default_number(PatchOption::InputTileIconOpacity),
+            input_tile_text_color: default_color(PatchOption::InputTileTextColor),
+            input_tile_border_color: default_color(PatchOption::InputTileBorderColor),
+            input_tile_border_width: default_number(PatchOption::InputTileBorderWidth),
+        }
+    }
+}
+
+impl PatchOptions {
+    pub fn validate(&self) -> Result<(), PatchOptionError> {
+        for spec in &PATCH_OPTION_SPECS {
+            spec.kind
+                .validate(spec.id, self.option_value(spec.option))?;
+        }
+        Ok(())
+    }
+
+    pub fn set_option(&mut self, id: &str, value: &str) -> Result<(), PatchOptionError> {
+        let spec =
+            option_spec_by_id(id).ok_or_else(|| PatchOptionError::UnknownOption(id.to_owned()))?;
+        let parsed = spec.kind.parse(spec.id, value)?;
+        self.set_option_value(spec.option, parsed);
+        Ok(())
+    }
+
+    pub fn value(&self, id: &str) -> Option<String> {
+        let spec = option_spec_by_id(id)?;
+        Some(spec.kind.display(self.option_value(spec.option)))
+    }
+
+    pub(crate) fn option_replacement(&self, option: PatchOption) -> String {
+        let spec = option_spec_by_option(option);
+        let value = spec.kind.qml_value(self.option_value(option));
+        spec.qml_format.apply(value)
+    }
+
+    fn option_value(&self, option: PatchOption) -> PatchOptionValue<'_> {
+        match option {
+            PatchOption::MainPanelColor => PatchOptionValue::Color(&self.main_panel_color),
+            PatchOption::MainPanelOpacity => PatchOptionValue::Number(self.main_panel_opacity),
+            PatchOption::MenuPopupColor => PatchOptionValue::Color(&self.menu_popup_color),
+            PatchOption::ButtonDefaultColor => PatchOptionValue::Color(&self.button_default_color),
+            PatchOption::ButtonIdleFill => PatchOptionValue::Color(&self.button_idle_fill),
+            PatchOption::InputTileBackgroundColor => {
+                PatchOptionValue::Color(&self.input_tile_background_color)
+            }
+            PatchOption::InputTileIconOpacity => {
+                PatchOptionValue::Number(self.input_tile_icon_opacity)
+            }
+            PatchOption::InputTileTextColor => PatchOptionValue::Color(&self.input_tile_text_color),
+            PatchOption::InputTileBorderColor => {
+                PatchOptionValue::Color(&self.input_tile_border_color)
+            }
+            PatchOption::InputTileBorderWidth => {
+                PatchOptionValue::Number(self.input_tile_border_width)
+            }
+        }
+    }
+
+    fn set_option_value(&mut self, option: PatchOption, value: ParsedPatchOptionValue) {
+        match (option, value) {
+            (PatchOption::MainPanelColor, ParsedPatchOptionValue::Color(value)) => {
+                self.main_panel_color = value
+            }
+            (PatchOption::MainPanelOpacity, ParsedPatchOptionValue::Number(value)) => {
+                self.main_panel_opacity = value
+            }
+            (PatchOption::MenuPopupColor, ParsedPatchOptionValue::Color(value)) => {
+                self.menu_popup_color = value
+            }
+            (PatchOption::ButtonDefaultColor, ParsedPatchOptionValue::Color(value)) => {
+                self.button_default_color = value
+            }
+            (PatchOption::ButtonIdleFill, ParsedPatchOptionValue::Color(value)) => {
+                self.button_idle_fill = value
+            }
+            (PatchOption::InputTileBackgroundColor, ParsedPatchOptionValue::Color(value)) => {
+                self.input_tile_background_color = value
+            }
+            (PatchOption::InputTileIconOpacity, ParsedPatchOptionValue::Number(value)) => {
+                self.input_tile_icon_opacity = value
+            }
+            (PatchOption::InputTileTextColor, ParsedPatchOptionValue::Color(value)) => {
+                self.input_tile_text_color = value
+            }
+            (PatchOption::InputTileBorderColor, ParsedPatchOptionValue::Color(value)) => {
+                self.input_tile_border_color = value
+            }
+            (PatchOption::InputTileBorderWidth, ParsedPatchOptionValue::Number(value)) => {
+                self.input_tile_border_width = value
+            }
+            _ => unreachable!("patch option kind must match its stored field"),
+        }
+    }
+}
+
+fn option_spec_by_id(id: &str) -> Option<&'static PatchOptionSpec> {
+    PATCH_OPTION_SPECS.iter().find(|spec| spec.id == id)
+}
+
+fn option_spec_by_option(option: PatchOption) -> &'static PatchOptionSpec {
+    PATCH_OPTION_SPECS
+        .iter()
+        .find(|spec| spec.option == option)
+        .expect("every patch option must have a specification")
+}
+
+fn default_option_value(option: PatchOption) -> ParsedPatchOptionValue {
+    let spec = option_spec_by_option(option);
+    spec.kind
+        .parse(spec.id, spec.default)
+        .expect("patch option defaults must be valid")
+}
+
+fn default_color(option: PatchOption) -> String {
+    match default_option_value(option) {
+        ParsedPatchOptionValue::Color(value) => value,
+        ParsedPatchOptionValue::Number(_) => unreachable!("color option must have a color default"),
+    }
+}
+
+fn default_number(option: PatchOption) -> f64 {
+    match default_option_value(option) {
+        ParsedPatchOptionValue::Number(value) => value,
+        ParsedPatchOptionValue::Color(_) => {
+            unreachable!("numeric option must have a numeric default")
+        }
+    }
+}
+
+fn is_qt_hex_color(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix('#') else {
+        return false;
+    };
+    matches!(hex.len(), 6 | 8) && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn parse_color(name: &'static str, value: &str) -> Result<String, PatchOptionError> {
+    if !is_qt_hex_color(value) {
+        return Err(PatchOptionError::InvalidColor { name });
+    }
+    Ok(value.to_ascii_uppercase())
+}
+
+fn parse_number(
+    name: &'static str,
+    value: &str,
+    min: f64,
+    max: f64,
+    range: &'static str,
+) -> Result<f64, PatchOptionError> {
+    let number = value
+        .parse::<f64>()
+        .map_err(|_| PatchOptionError::InvalidNumber { name, range })?;
+    validate_number(name, number, min, max, range)?;
+    Ok(number)
+}
+
+fn validate_number(
+    name: &'static str,
+    value: f64,
+    min: f64,
+    max: f64,
+    range: &'static str,
+) -> Result<(), PatchOptionError> {
+    if value.is_finite() && (min..=max).contains(&value) {
+        Ok(())
+    } else {
+        Err(PatchOptionError::InvalidNumber { name, range })
+    }
+}
+
+fn qml_color(color: &str) -> String {
+    format!("\"{color}\"")
+}
+
+fn qml_number(value: f64) -> String {
+    if value == 0.0 {
+        "0".to_owned()
+    } else {
+        value.to_string()
+    }
+}

@@ -11,7 +11,9 @@ use sha2::{Digest, Sha256};
 use midnight_ui_patcher::config::{self, UserConfig};
 use midnight_ui_patcher::deploy::{self, DeploymentPlan};
 use midnight_ui_patcher::patcher::{PatchError, patch_qml, selected_patch_ids};
-use midnight_ui_patcher::patches::{PATCHES, TARGETS};
+use midnight_ui_patcher::patches::{
+    PATCH_OPTION_SPECS, PATCHES, PatchOptionError, PatchOptions, TARGETS,
+};
 
 const DEPLOY_REFRESH_PENDING: &str = "Pending owner approval";
 
@@ -105,6 +107,9 @@ struct ConfigSetArgs {
     /// SSH port; 0 restores the SSH client's default port.
     #[arg(long, value_name = "PORT")]
     port: Option<u16>,
+    /// Set a saved appearance option as KEY=VALUE; repeat for multiple options.
+    #[arg(long = "patch-option", value_name = "KEY=VALUE", action = ArgAction::Append)]
+    patch_option: Vec<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -123,10 +128,22 @@ struct PatchSelectionArgs {
     exclude: Vec<String>,
 }
 
+#[derive(Debug, Args, Clone, Default)]
+struct PatchOptionArgs {
+    /// Override appearance settings as KEY=VALUE; repeat to change multiple values.
+    #[arg(long = "patch-option", value_name = "KEY=VALUE", action = ArgAction::Append)]
+    patch_option: Vec<String>,
+    /// Persist supplied overrides locally before contacting the TV.
+    #[arg(long)]
+    save_options: bool,
+}
+
 #[derive(Debug, Args)]
 struct InspectArgs {
     #[command(flatten)]
     selection: PatchSelectionArgs,
+    #[command(flatten)]
+    options: PatchOptionArgs,
     /// Include the raw QML diff in the output.
     #[arg(long)]
     diff: bool,
@@ -152,6 +169,8 @@ enum DeviceCommand {
 struct ApplyArgs {
     #[command(flatten)]
     selection: PatchSelectionArgs,
+    #[command(flatten)]
+    options: PatchOptionArgs,
     /// Include the raw QML diff in the output.
     #[arg(long)]
     diff: bool,
@@ -177,6 +196,9 @@ struct RestartDisplayArgs {
 struct ReportArgs {
     #[command(flatten)]
     selection: PatchSelectionArgs,
+    /// Appearance values to include in the report; repeat to reproduce temporary overrides.
+    #[arg(long = "patch-option", value_name = "KEY=VALUE", action = ArgAction::Append)]
+    patch_option: Vec<String>,
     /// Number of structural patch sites verified by an earlier inspection.
     #[arg(long, value_name = "COUNT")]
     structurally_verified: Option<usize>,
@@ -426,6 +448,153 @@ fn load_settings(config_path: Option<&Path>) -> Result<(PathBuf, UserConfig), Co
         None => config::load_or_create().map_err(config_failure),
     }
 }
+fn apply_patch_option_values(
+    options: &mut PatchOptions,
+    assignments: &[String],
+) -> Result<(), CommandFailure> {
+    let mut seen = BTreeSet::new();
+    for assignment in assignments {
+        let Some((id, value)) = assignment.split_once('=') else {
+            return Err(CommandFailure::usage(
+                "invalid_patch_option",
+                format!(
+                    "Expected KEY=VALUE, received `{}`.",
+                    safe_cli_text(assignment)
+                ),
+            ));
+        };
+        if id.is_empty() || value.is_empty() {
+            return Err(CommandFailure::usage(
+                "invalid_patch_option",
+                "Patch option keys and values must not be empty.",
+            ));
+        }
+        if !seen.insert(id.to_owned()) {
+            return Err(CommandFailure::usage(
+                "duplicate_patch_option",
+                format!(
+                    "Specify patch option `{}` only once per command.",
+                    safe_cli_text(id)
+                ),
+            ));
+        }
+        options
+            .set_option(id, value)
+            .map_err(patch_option_failure)?;
+    }
+    options.validate().map_err(patch_option_failure)
+}
+
+fn patch_option_failure(error: PatchOptionError) -> CommandFailure {
+    match error {
+        PatchOptionError::UnknownOption(id) => CommandFailure::usage(
+            "unknown_patch_option",
+            format!(
+                "Unknown patch option `{}`. Use `patches list` to see valid keys.",
+                safe_cli_text(&id)
+            ),
+        ),
+        other => CommandFailure::usage("invalid_patch_option", other.to_string()),
+    }
+}
+
+fn load_device_settings(
+    config_path: Option<&Path>,
+    options: &PatchOptionArgs,
+) -> Result<(PathBuf, UserConfig), CommandFailure> {
+    if options.save_options && options.patch_option.is_empty() {
+        return Err(CommandFailure::usage(
+            "missing_patch_options",
+            "`--save-options` requires at least one `--patch-option KEY=VALUE`.",
+        ));
+    }
+    let (path, mut settings) = load_settings(config_path)?;
+    apply_patch_option_values(&mut settings.patch_options, &options.patch_option)?;
+    if options.save_options {
+        match config_path {
+            Some(_) => config::save_at(&path, &settings),
+            None => config::save(&path, &settings),
+        }
+        .map_err(config_failure)?;
+    }
+    Ok((path, settings))
+}
+
+fn patch_options_value(options: &PatchOptions) -> Value {
+    patch_options_value_for(options, None)
+}
+
+fn selected_patch_options_value(options: &PatchOptions, selected_ids: &BTreeSet<String>) -> Value {
+    patch_options_value_for(options, Some(selected_ids))
+}
+
+fn patch_options_value_for(
+    options: &PatchOptions,
+    selected_ids: Option<&BTreeSet<String>>,
+) -> Value {
+    Value::Object(
+        PATCH_OPTION_SPECS
+            .iter()
+            .filter(|spec| selected_ids.map_or(true, |ids| ids.contains(spec.patch_id)))
+            .map(|spec| {
+                (
+                    spec.id.to_owned(),
+                    json!(
+                        options
+                            .value(spec.id)
+                            .expect("option metadata must map to a value")
+                    ),
+                )
+            })
+            .collect(),
+    )
+}
+
+fn option_kind_name(kind: midnight_ui_patcher::patches::PatchOptionKind) -> &'static str {
+    match kind {
+        midnight_ui_patcher::patches::PatchOptionKind::Color => "color",
+        midnight_ui_patcher::patches::PatchOptionKind::Opacity => "opacity",
+        midnight_ui_patcher::patches::PatchOptionKind::RelativeWidth => "relative-width",
+    }
+}
+
+fn patch_option_spec_value(spec: &midnight_ui_patcher::patches::PatchOptionSpec) -> Value {
+    json!({
+        "id": spec.id,
+        "patch_id": spec.patch_id,
+        "kind": option_kind_name(spec.kind),
+        "default": spec.default,
+        "description": spec.help,
+    })
+}
+
+fn format_patch_options(options: &PatchOptions) -> String {
+    format_patch_options_for(options, None)
+}
+
+fn format_patch_options_for(
+    options: &PatchOptions,
+    selected_ids: Option<&BTreeSet<String>>,
+) -> String {
+    let values = PATCH_OPTION_SPECS
+        .iter()
+        .filter(|spec| selected_ids.map_or(true, |ids| ids.contains(spec.patch_id)))
+        .map(|spec| {
+            format!(
+                "  {}={}",
+                spec.id,
+                options
+                    .value(spec.id)
+                    .expect("option metadata must map to a value")
+            )
+        })
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        "  (none applicable to selected edits)".to_owned()
+    } else {
+        values.join("\n")
+    }
+}
 
 fn run_config(
     command: ConfigCommand,
@@ -436,7 +605,7 @@ fn run_config(
             let (_, settings) = load_settings(config_path)?;
             let data = config_value(&settings);
             let text = format!(
-                "SSH target: {}\nSSH config file: {}\nSSH port: {}\nIdentity file: {}\nTV model: {}\nFirmware label: {}\n",
+                "SSH target: {}\nSSH config file: {}\nSSH port: {}\nIdentity file: {}\nTV model: {}\nFirmware label: {}\nAppearance options:\n{}\n",
                 shown(&settings.ssh_target),
                 shown(&settings.ssh_config_file),
                 if settings.port == 0 {
@@ -447,6 +616,7 @@ fn run_config(
                 shown(&settings.identity_file),
                 shown(&settings.model),
                 shown(&settings.firmware_label),
+                format_patch_options(&settings.patch_options),
             );
             Ok(CommandResult { text, data })
         }
@@ -457,6 +627,7 @@ fn run_config(
                 && args.firmware_label.is_none()
                 && args.identity_file.is_none()
                 && args.port.is_none()
+                && args.patch_option.is_empty()
             {
                 return Err(CommandFailure::usage(
                     "missing_settings",
@@ -482,12 +653,13 @@ fn run_config(
             if let Some(value) = args.port {
                 settings.port = value;
             }
+            apply_patch_option_values(&mut settings.patch_options, &args.patch_option)?;
             match config_path {
                 Some(_) => config::save_at(&path, &settings),
                 None => config::save(&path, &settings),
             }
             .map_err(config_failure)?;
-            let text = "Connection settings saved locally. Passwords and private-key contents are never stored.\n".to_owned();
+            let text = "Connection and appearance settings saved locally. Passwords and private-key contents are never stored.\n".to_owned();
             Ok(CommandResult {
                 text,
                 data: config_value(&settings),
@@ -504,12 +676,17 @@ fn config_value(settings: &UserConfig) -> Value {
         "identity_file": &settings.identity_file,
         "model": &settings.model,
         "firmware_label": &settings.firmware_label,
+        "patch_options": patch_options_value(&settings.patch_options),
     })
 }
 
 fn run_patches(command: PatchesCommand) -> Result<CommandResult, CommandFailure> {
     match command {
         PatchesCommand::List => {
+            let options = PATCH_OPTION_SPECS
+                .iter()
+                .map(patch_option_spec_value)
+                .collect::<Vec<_>>();
             let patches = PATCHES
                 .iter()
                 .map(|patch| {
@@ -518,6 +695,11 @@ fn run_patches(command: PatchesCommand) -> Result<CommandResult, CommandFailure>
                         "label": patch.label,
                         "target": patch.target,
                         "targets": patch.affected_targets().collect::<Vec<_>>(),
+                        "options": PATCH_OPTION_SPECS
+                            .iter()
+                            .filter(|option| option.patch_id == patch.id)
+                            .map(patch_option_spec_value)
+                            .collect::<Vec<_>>(),
                     })
                 })
                 .collect::<Vec<_>>();
@@ -532,9 +714,18 @@ fn run_patches(command: PatchesCommand) -> Result<CommandResult, CommandFailure>
                 }
                 text.push('\n');
             }
+            text.push_str("\nAppearance options (repeat `--patch-option KEY=VALUE`):\n");
+            for option in &PATCH_OPTION_SPECS {
+                text.push_str(&format!(
+                    "  {}={} ({})\n",
+                    option.id,
+                    option.default,
+                    option_kind_name(option.kind)
+                ));
+            }
             Ok(CommandResult {
                 text,
-                data: json!({ "patches": patches }),
+                data: json!({ "patches": patches, "options": options }),
             })
         }
     }
@@ -556,7 +747,7 @@ fn inspect(
     config_path: Option<&Path>,
 ) -> Result<CommandResult, CommandFailure> {
     let selected = resolve_selection(&selection.selection)?;
-    let (_, settings) = load_settings(config_path)?;
+    let (_, settings) = load_device_settings(config_path, &selection.options)?;
     let plan = deploy::prepare_plan(&settings, &selected).map_err(deploy_failure)?;
     let fingerprint = plan_fingerprint(&settings, &plan)?;
     let data = plan_value(&plan, &fingerprint, selection.diff);
@@ -575,7 +766,7 @@ fn apply(args: ApplyArgs, config_path: Option<&Path>) -> Result<CommandResult, C
         ));
     }
 
-    let (_, settings) = load_settings(config_path)?;
+    let (_, settings) = load_device_settings(config_path, &args.options)?;
     let plan = deploy::prepare_plan(&settings, &selected).map_err(deploy_failure)?;
     let fingerprint = plan_fingerprint(&settings, &plan)?;
     let data = plan_value(&plan, &fingerprint, args.diff);
@@ -662,7 +853,8 @@ fn run_report(
     config_path: Option<&Path>,
 ) -> Result<CommandResult, CommandFailure> {
     let selected = resolve_selection(&args.selection)?;
-    let (_, settings) = load_settings(config_path)?;
+    let (_, mut settings) = load_settings(config_path)?;
+    apply_patch_option_values(&mut settings.patch_options, &args.patch_option)?;
     if args
         .structurally_verified
         .is_some_and(|count| count > PATCHES.len())
@@ -680,7 +872,7 @@ fn run_report(
         .filter(|patch| selected.contains(patch.id))
         .map(|patch| patch.label)
         .collect::<Vec<_>>();
-    let report = deploy::manual_report_for(
+    let mut report = deploy::manual_report_for(
         args.structurally_verified.map(|_| settings.model.as_str()),
         args.structurally_verified
             .map(|_| settings.firmware_label.as_str()),
@@ -690,10 +882,17 @@ fn run_report(
         args.refresh.label(),
         args.visual_result.label(),
     );
+    report.push_str("\nAppearance options:\n");
+    report.push_str(&format_patch_options_for(
+        &settings.patch_options,
+        Some(&selected),
+    ));
+    report.push('\n');
     Ok(CommandResult {
         text: report.clone(),
         data: json!({
             "report": report,
+            "patch_options": selected_patch_options_value(&settings.patch_options, &selected),
             "structurally_verified": args.structurally_verified,
             "deployment": args.deployment.label(selected_labels.len()),
             "display_refresh": args.refresh.label(),
@@ -785,6 +984,7 @@ fn plan_value(plan: &DeploymentPlan, fingerprint: &str, include_diff: bool) -> V
         "patch_sites_matched": plan.structurally_verified,
         "patch_sites_total": PATCHES.len(),
         "selected_edits": selected_edits,
+        "patch_options": selected_patch_options_value(&plan.patch_options, &plan.selected_ids),
         "plan_fingerprint": fingerprint,
     });
     if include_diff {
@@ -814,6 +1014,12 @@ fn format_plan(plan: &DeploymentPlan, fingerprint: &str, include_diff: bool) -> 
             }
         }
     }
+    text.push_str("\nAppearance options:\n");
+    text.push_str(&format_patch_options_for(
+        &plan.patch_options,
+        Some(&plan.selected_ids),
+    ));
+    text.push('\n');
     text.push_str(&format!(
         "Compatibility: {}\nPlan fingerprint: {fingerprint}\n",
         plan.compatibility_warning(),
@@ -885,7 +1091,8 @@ fn verify_local_preview(root: &Path) -> Result<usize, String> {
     }
     let selected = selected_patch_ids(PATCHES.iter().map(|patch| patch.id))
         .map_err(|error| error.to_string())?;
-    let output = patch_qml(&sources, &selected).map_err(|error| error.to_string())?;
+    let output = patch_qml(&sources, &selected, &PatchOptions::default())
+        .map_err(|error| error.to_string())?;
     for target in TARGETS {
         let overlay_path = root.join("preview/overlay").join(target);
         let expected = fs::read_to_string(&overlay_path).map_err(|_| {
@@ -958,8 +1165,9 @@ mod tests {
             mode: deploy::InstallMode::Fresh,
             model: "OLED55".to_owned(),
             firmware_label: "webOS".to_owned(),
+            patch_options: PatchOptions::default(),
             selected_ids: BTreeSet::from(["main-panel-color".to_owned()]),
-            selected_labels: vec!["Set panel backdrop color to black"],
+            selected_labels: vec!["Set panel backdrop color"],
             patched_files: BTreeMap::from([("target.qml".to_owned(), "patched".to_owned())]),
             target_hashes: BTreeMap::from([("target.qml".to_owned(), "before".to_owned())]),
             diff: String::new(),
@@ -971,12 +1179,22 @@ mod tests {
         let mut plan = sample_plan();
         let one_selected = format_plan(&plan, "fingerprint", false);
         assert!(one_selected.contains(&format!("Selected edits (1/{}):", PATCHES.len())));
+        assert!(one_selected.contains("main-panel-color=#000000"));
+        assert!(!one_selected.contains("input-tile-text-color"));
+        assert_eq!(
+            plan_value(&plan, "fingerprint", false)["patch_options"]
+                .as_object()
+                .unwrap()
+                .len(),
+            1
+        );
 
         let second_patch = &PATCHES[1];
         plan.selected_ids.insert(second_patch.id.to_owned());
         plan.selected_labels.push(second_patch.label);
         let two_selected = format_plan(&plan, "fingerprint", false);
         assert!(two_selected.contains(&format!("Selected edits (2/{}):", PATCHES.len())));
+        assert!(two_selected.contains("main-panel-opacity=1"));
     }
 
     #[test]
@@ -1006,6 +1224,7 @@ mod tests {
                 firmware_label: None,
                 identity_file: None,
                 port: None,
+                patch_option: vec!["input-tile-text-color=#00AACC".to_owned()],
             }),
             Some(&path),
         )
@@ -1018,8 +1237,13 @@ mod tests {
         assert_eq!(saved.firmware_label, "Older firmware");
         assert_eq!(saved.identity_file, "~/.ssh/tv");
         assert_eq!(saved.port, 2222);
+        assert_eq!(saved.patch_options.input_tile_text_color, "#00AACC");
         assert_eq!(result.data["model"], "OLED55");
         assert_eq!(result.data["ssh_config_file"], "custom/ssh_config");
+        assert_eq!(
+            result.data["patch_options"]["input-tile-text-color"],
+            "#00AACC"
+        );
         #[cfg(unix)]
         assert_eq!(
             std::fs::metadata(parent).unwrap().permissions().mode() & 0o777,
@@ -1027,6 +1251,105 @@ mod tests {
         );
 
         std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn device_options_are_cli_parseable_with_explicit_save_flag() {
+        let cli = Cli::try_parse_from([
+            "midnight-ui-patcher",
+            "device",
+            "inspect",
+            "--patch-option",
+            "input-tile-text-color=#00AACC",
+            "--patch-option",
+            "main-panel-opacity=0.5",
+            "--save-options",
+        ])
+        .unwrap();
+        let AppCommand::Device(DeviceCommand::Inspect(args)) = cli.command else {
+            panic!("device inspect arguments should parse");
+        };
+        assert_eq!(
+            args.options.patch_option,
+            ["input-tile-text-color=#00AACC", "main-panel-opacity=0.5"]
+        );
+        assert!(args.options.save_options);
+    }
+
+    #[test]
+    fn unknown_option_errors_cannot_emit_terminal_control_characters() {
+        let mut options = PatchOptions::default();
+        let error = apply_patch_option_values(&mut options, &["unknown\u{1b}[31m=x".to_owned()])
+            .unwrap_err();
+
+        assert_eq!(error.code, "unknown_patch_option");
+        assert!(!error.message.chars().any(char::is_control));
+        assert!(error.message.contains("unknown[31m"));
+    }
+    #[test]
+    fn cli_option_overrides_merge_and_persist_only_when_requested() {
+        let path = isolated_config_path("patch-options");
+        let mut original = UserConfig::default();
+        original.patch_options.menu_popup_color = "#112233".to_owned();
+        config::save(&path, &original).unwrap();
+
+        let transient = PatchOptionArgs {
+            patch_option: vec!["input-tile-text-color=#00aacc".to_owned()],
+            save_options: false,
+        };
+        let (_, effective) = load_device_settings(Some(&path), &transient).unwrap();
+        assert_eq!(effective.patch_options.input_tile_text_color, "#00AACC");
+        assert_eq!(effective.patch_options.menu_popup_color, "#112233");
+        let persisted = config::load_or_create_at(&path).unwrap();
+        assert_eq!(persisted.patch_options.input_tile_text_color, "#FF0000");
+        assert_eq!(persisted.patch_options.menu_popup_color, "#112233");
+
+        let saved_override = PatchOptionArgs {
+            patch_option: vec!["main-panel-color=#abcdef".to_owned()],
+            save_options: true,
+        };
+        let (_, effective) = load_device_settings(Some(&path), &saved_override).unwrap();
+        assert_eq!(effective.patch_options.main_panel_color, "#ABCDEF");
+        let persisted = config::load_or_create_at(&path).unwrap();
+        assert_eq!(persisted.patch_options.main_panel_color, "#ABCDEF");
+        assert_eq!(persisted.patch_options.menu_popup_color, "#112233");
+
+        let invalid = PatchOptionArgs {
+            patch_option: vec!["main-panel-color=#bad-value".to_owned()],
+            save_options: true,
+        };
+        assert_eq!(
+            load_device_settings(Some(&path), &invalid)
+                .unwrap_err()
+                .code,
+            "invalid_patch_option"
+        );
+        assert_eq!(
+            config::load_or_create_at(&path)
+                .unwrap()
+                .patch_options
+                .main_panel_color,
+            "#ABCDEF"
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn patch_list_exposes_supported_options_and_defaults_for_agents() {
+        let result = run_patches(PatchesCommand::List).unwrap();
+        assert_eq!(
+            result.data["options"].as_array().unwrap().len(),
+            PATCH_OPTION_SPECS.len()
+        );
+        assert_eq!(result.data["options"][7]["id"], "input-tile-text-color");
+        assert_eq!(result.data["options"][7]["default"], "#FF0000");
+        let text_patch = result.data["patches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|patch| patch["id"] == "input-tile-red-text")
+            .unwrap();
+        assert_eq!(text_patch["options"][0]["kind"], "color");
     }
 
     #[test]
@@ -1044,13 +1367,21 @@ mod tests {
                 deployment: ReportDeployment::Succeeded,
                 refresh: ReportRefresh::RestartedVisualCheckPending,
                 visual_result: VisualResult::LooksGood,
+                patch_option: Vec::new(),
             },
             Some(&path),
         )
         .unwrap_or_else(|error| panic!("{}", error.message));
 
         assert!(result.text.contains("Model: OLED55"));
-        assert!(result.text.contains("- Set panel backdrop color to black"));
+        assert!(result.text.contains("- Set panel backdrop color"));
+        assert!(
+            result
+                .text
+                .contains("Appearance options:\n  main-panel-color=#000000")
+        );
+        assert!(!result.text.contains("input-tile-text-color"));
+        assert_eq!(result.data["patch_options"].as_object().unwrap().len(), 1);
         assert!(result.text.contains(&format!(
             "Deployment: {}",
             deploy::deployment_success_summary(1)
@@ -1067,6 +1398,39 @@ mod tests {
         );
         assert!(result.text.contains("Visual check: Looks good"));
 
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn report_includes_temporary_appearance_overrides_without_persisting_them() {
+        let path = isolated_config_path("report-options");
+        config::save(&path, &UserConfig::default()).unwrap();
+        let cli = Cli::try_parse_from([
+            "midnight-ui-patcher",
+            "--config",
+            path.to_str().unwrap(),
+            "report",
+            "--patch",
+            "main-panel-color",
+            "--deployment",
+            "succeeded",
+            "--patch-option",
+            "main-panel-color=#123456",
+        ])
+        .unwrap();
+        let AppCommand::Report(args) = cli.command else {
+            panic!("expected report command");
+        };
+
+        let result = run_report(args, Some(&path)).unwrap();
+        assert!(
+            result
+                .text
+                .contains("Appearance options:\n  main-panel-color=#123456")
+        );
+        assert_eq!(result.data["patch_options"]["main-panel-color"], "#123456");
+        let saved = config::load_or_create_at(&path).unwrap();
+        assert_eq!(saved.patch_options.main_panel_color, "#000000");
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
@@ -1168,6 +1532,7 @@ mod tests {
         let config_path = root.join("config.toml");
         let apply_args = ApplyArgs {
             selection: PatchSelectionArgs::default(),
+            options: PatchOptionArgs::default(),
             diff: false,
             expect_plan_fingerprint: "sha256:reviewed".to_owned(),
             confirm_root_recovery: false,

@@ -10,7 +10,9 @@ use gpui::{
 
 use crate::config::{self, UserConfig};
 use crate::deploy::{self, DeploymentPlan};
-use crate::patches::{PATCHES, PatchSpec, TARGETS};
+use crate::patches::{
+    PATCH_OPTION_SPECS, PATCHES, PatchOptionKind, PatchOptionSpec, PatchOptions, PatchSpec, TARGETS,
+};
 use crate::text_input::{self, LineInput};
 const DEPLOY_SUCCESS: &str = "Installed/updated; all target mounts and backup manifest verified";
 #[cfg(target_os = "macos")]
@@ -79,7 +81,9 @@ struct AppView {
     config: UserConfig,
     settings_fields: SettingsFields,
     settings_open: bool,
+    settings_load_failed: bool,
     selected_ids: BTreeSet<String>,
+    expanded_patch_ids: BTreeSet<String>,
     plan: Option<Arc<DeploymentPlan>>,
     busy: bool,
     error: Option<String>,
@@ -100,6 +104,11 @@ struct SettingsFields {
     firmware_label: Entity<LineInput>,
     identity_file: Entity<LineInput>,
     port: Entity<LineInput>,
+    appearance: AppearanceFields,
+}
+
+struct AppearanceFields {
+    inputs: Vec<(&'static str, Entity<LineInput>)>,
 }
 
 impl SettingsFields {
@@ -132,6 +141,7 @@ impl SettingsFields {
                     "Default SSH port",
                 )
             }),
+            appearance: AppearanceFields::new(&config.patch_options, cx),
         }
     }
 
@@ -164,7 +174,70 @@ impl SettingsFields {
         config.firmware_label = self.firmware_label.read_with(cx, |input, _| input.text());
         config.identity_file = self.identity_file.read_with(cx, |input, _| input.text());
         config.port = port;
+        config.patch_options = self.appearance.to_options(cx)?;
         Ok(config)
+    }
+}
+impl AppearanceFields {
+    fn new(options: &PatchOptions, cx: &mut Context<AppView>) -> Self {
+        let inputs = PATCH_OPTION_SPECS
+            .iter()
+            .map(|option| {
+                let value = options
+                    .value(option.id)
+                    .expect("option metadata must map to a value");
+                let placeholder = match option.kind {
+                    PatchOptionKind::Color => "#RRGGBB or #AARRGGBB",
+                    PatchOptionKind::Opacity => "0 to 1",
+                    PatchOptionKind::RelativeWidth => "0 to 100",
+                };
+                (
+                    option.id,
+                    cx.new(|cx| LineInput::new(cx, value, placeholder)),
+                )
+            })
+            .collect();
+        Self { inputs }
+    }
+
+    fn to_options(&self, cx: &mut Context<AppView>) -> Result<PatchOptions, String> {
+        let mut options = PatchOptions::default();
+        for (id, input) in &self.inputs {
+            let value = input.read_with(cx, |input, _| input.text());
+            options
+                .set_option(id, &value)
+                .map_err(|error| error.to_string())?;
+        }
+        options.validate().map_err(|error| error.to_string())?;
+        Ok(options)
+    }
+
+    fn input(&self, id: &str) -> Entity<LineInput> {
+        self.inputs
+            .iter()
+            .find(|(option_id, _)| *option_id == id)
+            .map(|(_, input)| input.clone())
+            .expect("appearance input must have option metadata")
+    }
+
+    fn value(&self, id: &str, cx: &Context<AppView>) -> String {
+        self.input(id).read_with(cx, |input, _| input.text())
+    }
+
+    fn summary(&self, patch_id: &str, cx: &Context<AppView>) -> String {
+        let mut summary = String::new();
+        for option in PATCH_OPTION_SPECS
+            .iter()
+            .filter(|option| option.patch_id == patch_id)
+        {
+            if !summary.is_empty() {
+                summary.push_str(" · ");
+            }
+            summary.push_str(option.label);
+            summary.push_str(": ");
+            summary.push_str(&self.value(option.id, cx));
+        }
+        summary
     }
 }
 
@@ -178,11 +251,13 @@ impl AppView {
             config,
             settings_fields,
             settings_open,
+            settings_load_failed: error.is_some(),
             selected_ids: PATCHES.iter().map(|patch| patch.id.to_owned()).collect(),
+            expanded_patch_ids: BTreeSet::new(),
             plan: None,
             busy: false,
             error,
-            status: "Edit connection settings, then inspect the TV before applying any changes."
+            status: "Edit connection settings, choose tweaks, then inspect the TV before applying any changes."
                 .into(),
             show_diff: false,
             confirm_unverified: false,
@@ -195,17 +270,122 @@ impl AppView {
     }
 
     fn edit_settings(&mut self, cx: &mut Context<Self>) {
-        self.settings_fields = SettingsFields::new(&self.config, cx);
         self.settings_open = true;
         self.error = None;
         cx.notify();
     }
 
     fn discard_settings(&mut self, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
         self.settings_fields = SettingsFields::new(&self.config, cx);
         self.settings_open = false;
+        self.expanded_patch_ids.clear();
+        self.invalidate_plan("Unsaved connection and appearance settings discarded.");
+        cx.notify();
+    }
+
+    fn reset_appearance_options(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let defaults = PatchOptions::default();
+        for (id, input) in &self.settings_fields.appearance.inputs {
+            let value = defaults
+                .value(id)
+                .expect("option metadata must map to a value");
+            input.update(cx, |field, cx| field.set_text(value, window, cx));
+        }
+        self.invalidate_plan(
+            "Appearance choices reset to defaults; inspect to preview or save them.",
+        );
+        cx.notify();
+    }
+
+    fn toggle_patch_options(&mut self, patch_id: &'static str, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        if self.plan.is_some() {
+            self.invalidate_plan("Option editor opened; inspect again before applying.");
+        }
+        if !self.expanded_patch_ids.remove(patch_id) {
+            self.expanded_patch_ids.insert(patch_id.to_owned());
+        }
+        cx.notify();
+    }
+
+    fn toggle_patch_selection(&mut self, patch_id: &'static str, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        if !self.selected_ids.remove(patch_id) {
+            self.selected_ids.insert(patch_id.to_owned());
+        }
+        self.invalidate_plan(&format!(
+            "{}/{} tweaks selected; inspect the TV again to validate and preview this selection.",
+            self.selected_ids.len(),
+            PATCHES.len(),
+        ));
+        cx.notify();
+    }
+    fn invalidate_plan(&mut self, status: &str) {
+        self.plan = None;
+        self.show_diff = false;
+        self.confirm_unverified = false;
+        self.confirm_root_recovery = false;
+        self.confirm_refresh = false;
+        self.deployment_status = "Not applied".into();
+        self.refresh_status = "Not restarted".into();
+        self.visual_result = "Not checked".into();
         self.error = None;
-        self.status = "Unsaved connection settings discarded.".into();
+        self.status = status.to_owned();
+    }
+
+    fn save_appearance_options(&mut self, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        if self.settings_load_failed {
+            self.error = Some(
+                "Saved settings could not be loaded; save connection settings before saving appearance choices."
+                    .into(),
+            );
+            self.status =
+                "Appearance choices were not saved because the current settings could not be loaded."
+                    .into();
+            cx.notify();
+            return;
+        }
+        let patch_options = match self.settings_fields.appearance.to_options(cx) {
+            Ok(options) => options,
+            Err(error) => {
+                self.error = Some(error);
+                self.status = "Appearance options are invalid; correct them before saving.".into();
+                cx.notify();
+                return;
+            }
+        };
+        let Some(settings_file) = self.settings_file.as_ref() else {
+            self.error = Some("User-local settings path is unavailable.".into());
+            cx.notify();
+            return;
+        };
+        let mut settings = self.config.clone();
+        settings.patch_options = patch_options;
+        match settings_file.save(&settings) {
+            Ok(()) => {
+                self.config = settings;
+                self.invalidate_plan(
+                    "Appearance choices saved locally. Inspect the TV to preview them.",
+                );
+            }
+            Err(error) => {
+                self.error = Some(error.to_string());
+                self.status = "Could not save appearance choices.".into();
+            }
+        }
         cx.notify();
     }
 
@@ -229,6 +409,7 @@ impl AppView {
         match settings_file.save(&settings) {
             Ok(()) => {
                 self.config = settings;
+                self.settings_load_failed = false;
                 self.settings_open = false;
                 self.plan = None;
                 self.deployment_status = "Not applied".into();
@@ -238,11 +419,11 @@ impl AppView {
                 self.confirm_root_recovery = false;
                 self.confirm_refresh = false;
                 self.error = None;
-                self.status = "Connection settings saved locally. Inspect the TV to fetch and verify current QML.".into();
+                self.status = "Connection and appearance settings saved locally. Inspect the TV to fetch and verify current QML.".into();
             }
             Err(error) => {
                 self.error = Some(error.to_string());
-                self.status = "Could not save connection settings.".into();
+                self.status = "Could not save connection and appearance settings.".into();
             }
         }
         cx.notify();
@@ -252,7 +433,18 @@ impl AppView {
         if self.busy || self.settings_open {
             return;
         }
-        let config = self.config.clone();
+        let mut config = self.config.clone();
+        config.patch_options = match self.settings_fields.appearance.to_options(cx) {
+            Ok(options) => options,
+            Err(error) => {
+                self.invalidate_plan(
+                    "Appearance options are invalid; correct them before inspecting.",
+                );
+                self.error = Some(error);
+                cx.notify();
+                return;
+            }
+        };
         let selected = self.selected_ids.clone();
         self.plan = None;
         self.deployment_status = "Not applied".into();
@@ -262,6 +454,8 @@ impl AppView {
         self.confirm_root_recovery = false;
         self.confirm_refresh = false;
         self.error = None;
+        self.show_diff = false;
+        self.expanded_patch_ids.clear();
         self.busy = true;
         self.status = format!(
             "Checking the live hook, lock, mounts, hashes, and backups; fetching {} QML files over root SSH…",
@@ -496,7 +690,7 @@ impl Render for AppView {
                                             .id("discard-settings")
                                             .on_click(cx.listener(|this, _, _, cx| this.discard_settings(cx)))
                                             .child("Discard changes"),
-                                    ),
+                                    )
                             )
                     })
                     .when(!self.settings_open, |card| {
@@ -512,50 +706,71 @@ impl Render for AppView {
                             )
                     }),
             )
-            .child(div().text_lg().font_weight(gpui::FontWeight::BOLD).child(format!("Choose edits ({selected_count}/{} selected)", PATCHES.len())))
-            .children(PATCHES.iter().map(|patch| patch_row(patch, self.selected_ids.contains(patch.id), cx)))
+            .child(div().text_lg().font_weight(gpui::FontWeight::BOLD).child(format!("Choose tweaks ({selected_count}/{} selected)", PATCHES.len())))
+            .children(PATCHES.iter().map(|patch| {
+                patch_row(
+                    patch,
+                    self.selected_ids.contains(patch.id),
+                    self.expanded_patch_ids.contains(patch.id),
+                    self.busy,
+                    &self.settings_fields.appearance,
+                    cx,
+                )
+            }))
+            .child(
+                div().flex().flex_col().gap_2()
+                    .child(div().text_sm().text_color(rgb(0xb7bbc2)).child("Option editors stay hidden until opened. Inspections use current values; save appearance choices to keep them."))
+                    .child(
+                        div().flex().gap_2()
+                            .child(
+                                div().px_3().py_2().bg(if self.busy { rgb(0x383a3d) } else { rgb(0x315a88) }).rounded_md()
+                                    .id("save-appearance-options")
+                                    .debug_selector(|| "save-appearance-options".to_owned())
+                                    .when(!self.busy, |button| button.cursor_pointer().on_click(cx.listener(|this, _, _, cx| this.save_appearance_options(cx))))
+                                    .child("Save appearance choices"),
+                            )
+                            .child(
+                                div().px_3().py_2().bg(if self.busy { rgb(0x383a3d) } else { rgb(0x343944) }).rounded_md()
+                                    .id("reset-appearance-defaults")
+                                    .debug_selector(|| "reset-appearance-defaults".to_owned())
+                                    .when(!self.busy, |button| button.cursor_pointer().on_click(cx.listener(|this, _, window, cx| this.reset_appearance_options(window, cx))))
+                                    .child("Reset appearance defaults"),
+                            ),
+                    ),
+            )
             .child(
                 div().flex().gap_2().child(
                     div().px_3().py_2().bg(if self.busy || self.settings_open { rgb(0x383a3d) } else { rgb(0x315a88) }).rounded_md()
                         .id("inspect-tv")
                         .when(!self.busy && !self.settings_open, |button| button.cursor_pointer().on_click(cx.listener(|this, _, _, cx| this.inspect(cx))))
-                        .child(if self.busy { "Working…" } else if self.settings_open { "Save or discard settings first" } else { "Inspect TV and preview" }),
+                        .child(if self.busy { "Working…" } else if self.settings_open { "Save or discard connection settings first" } else { "Inspect TV and preview" }),
                 ).child(
                     div().px_3().py_2().bg(rgb(0x343944)).rounded_md().cursor_pointer()
                         .id("select-all")
                         .on_click(cx.listener(|this, _, _, cx| {
                             if this.busy { return; }
                             this.selected_ids = PATCHES.iter().map(|patch| patch.id.to_owned()).collect();
-                            this.plan = None;
-                            this.confirm_unverified = false;
-                            this.confirm_root_recovery = false;
-                            this.deployment_status = "Not applied".into();
-                            this.refresh_status = "Not restarted".into();
-                            this.visual_result = "Not checked".into();
-                            this.status = format!("All {} edits selected. Inspect the TV to validate the current source.", PATCHES.len());
+                            this.invalidate_plan(&format!(
+                                "All {} tweaks selected. Inspect the TV to validate the current source.",
+                                PATCHES.len()
+                            ));
                             cx.notify();
                         }))
-                        .child("Select all"),
+                        .child("Select all tweaks"),
                 ).child(
                     div().px_3().py_2().bg(rgb(0x343944)).rounded_md().cursor_pointer()
                         .id("clear-all")
                         .on_click(cx.listener(|this, _, _, cx| {
                             if this.busy { return; }
                             this.selected_ids.clear();
-                            this.plan = None;
-                            this.confirm_unverified = false;
-                            this.confirm_root_recovery = false;
-                            this.deployment_status = "Not applied".into();
-                            this.refresh_status = "Not restarted".into();
-                            this.visual_result = "Not checked".into();
-                            this.status = format!(
-                                "{}/{} edits selected. Select at least one before inspection.",
+                            this.invalidate_plan(&format!(
+                                "{}/{} tweaks selected. Select at least one before inspection.",
                                 this.selected_ids.len(),
                                 PATCHES.len(),
-                            );
+                            ));
                             cx.notify();
                         }))
-                        .child("Clear all"),
+                        .child("Clear all tweaks"),
                 ),
             )
             .child(div().p_2().bg(rgb(0x22252b)).rounded_md().child(self.status.clone()))
@@ -652,36 +867,119 @@ impl Render for AppView {
     }
 }
 
-fn patch_row(patch: &'static PatchSpec, selected: bool, cx: &Context<AppView>) -> impl IntoElement {
+fn patch_row(
+    patch: &'static PatchSpec,
+    selected: bool,
+    expanded: bool,
+    busy: bool,
+    appearance: &AppearanceFields,
+    cx: &Context<AppView>,
+) -> impl IntoElement {
+    let has_options = PATCH_OPTION_SPECS
+        .iter()
+        .any(|option| option.patch_id == patch.id);
+    let summary = appearance.summary(patch.id, cx);
+
     div()
         .flex()
-        .items_center()
+        .flex_col()
         .gap_2()
         .p_2()
         .bg(rgb(0x22252b))
         .rounded_md()
-        .cursor_pointer()
-        .id(patch.id)
-        .on_click(cx.listener(move |this, _, _, cx| {
-            if this.busy { return; }
-            if !this.selected_ids.remove(patch.id) {
-                this.selected_ids.insert(patch.id.to_owned());
-            }
-            this.plan = None;
-            this.confirm_unverified = false;
-            this.deployment_status = "Not applied".into();
-            this.confirm_root_recovery = false;
-            this.refresh_status = "Not restarted".into();
-            this.status = format!(
-                "{}/{} edits selected; inspect the TV again to validate and preview this selection.",
-                this.selected_ids.len(),
-                PATCHES.len(),
-            );
-            this.visual_result = "Not checked".into();
-            cx.notify();
-        }))
-        .child(if selected { "[x]" } else { "[ ]" })
-        .child(patch.label)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .id(SharedString::from(format!("patch-select-{}", patch.id)))
+                        .debug_selector(|| format!("patch-select-{}", patch.id))
+                        .when(!busy, |checkbox| {
+                            checkbox.cursor_pointer().on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.toggle_patch_selection(patch.id, cx);
+                                },
+                            ))
+                        })
+                        .child(
+                            div()
+                                .debug_selector(move || {
+                                    format!(
+                                        "patch-selection-state-{}-{}",
+                                        patch.id,
+                                        if selected { "selected" } else { "unselected" }
+                                    )
+                                })
+                                .child(if selected { "[x]" } else { "[ ]" }),
+                        )
+                        .child(patch.label),
+                )
+                .child(div().flex_1())
+                .when(has_options, |row| {
+                    row.child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .bg(rgb(0x343944))
+                            .rounded_md()
+                            .id(SharedString::from(format!(
+                                "patch-options-toggle-{}",
+                                patch.id
+                            )))
+                            .debug_selector(|| format!("patch-options-toggle-{}", patch.id))
+                            .when(!busy, |button| {
+                                button.cursor_pointer().on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.toggle_patch_options(patch.id, cx);
+                                    },
+                                ))
+                            })
+                            .child(if expanded {
+                                "Options ▾"
+                            } else {
+                                "Options ▸"
+                            }),
+                    )
+                }),
+        )
+        .when(!summary.is_empty(), |row| {
+            row.child(
+                div()
+                    .ml_8()
+                    .text_sm()
+                    .text_color(rgb(0xb7bbc2))
+                    .debug_selector(|| format!("patch-option-summary-{}", patch.id))
+                    .child(if selected {
+                        format!("Will apply: {summary}")
+                    } else {
+                        format!("Not selected · if selected: {summary}")
+                    }),
+            )
+        })
+        .when(expanded && has_options, |row| {
+            row.child(
+                div()
+                    .ml_8()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .p_2()
+                    .bg(rgb(0x17191d))
+                    .rounded_md()
+                    .debug_selector(|| format!("patch-option-editor-{}", patch.id))
+                    .children(
+                        PATCH_OPTION_SPECS
+                            .iter()
+                            .filter(|option| option.patch_id == patch.id)
+                            .map(|option| patch_option_field(option, appearance.input(option.id))),
+                    ),
+            )
+        })
 }
 
 fn visual_button(label: &'static str, current: &str, cx: &Context<AppView>) -> impl IntoElement {
@@ -716,23 +1014,47 @@ fn settings_field(
         .child(input)
         .child(div().text_sm().text_color(rgb(0xb7bbc2)).child(help))
 }
+
+fn patch_option_field(option: &PatchOptionSpec, input: Entity<LineInput>) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .debug_selector(|| format!("patch-option-field-{}", option.id))
+        .child(div().text_sm().child(option.label))
+        .child(input)
+        .child(div().text_sm().text_color(rgb(0xb7bbc2)).child(option.help))
+}
+
 #[cfg(test)]
 mod visual_layout_tests {
     use super::*;
     use gpui::TestAppContext;
 
     #[gpui::test]
-    async fn settings_explainer_stays_inside_screenshot_width(cx: &TestAppContext) {
+    async fn tweak_rows_show_option_summaries_and_collapsed_editors(cx: &TestAppContext) {
         let mut app_cx = (*cx).clone();
         let (_view, window_cx) = app_cx.add_window_view(|_, cx| {
             let config = UserConfig::default();
             let settings_fields = SettingsFields::new(&config, cx);
+            assert_eq!(
+                settings_fields.appearance.summary("main-panel-color", cx),
+                "Panel backdrop color: #000000"
+            );
+            assert_eq!(
+                settings_fields
+                    .appearance
+                    .summary("input-tile-red-text", cx),
+                "Input tile text color: #FF0000"
+            );
             AppView {
                 settings_file: None,
                 config,
                 settings_fields,
                 settings_open: true,
-                selected_ids: BTreeSet::new(),
+                settings_load_failed: false,
+                selected_ids: BTreeSet::from(["main-panel-color".to_owned()]),
+                expanded_patch_ids: BTreeSet::new(),
                 plan: None,
                 busy: false,
                 error: None,
@@ -751,11 +1073,228 @@ mod visual_layout_tests {
 
         let bounds = window_cx
             .debug_bounds("connection-settings-explainer")
-            .expect("settings explainer should be rendered");
+            .expect("connection settings explainer should be rendered");
         assert!(bounds.size.width > px(0.0));
         assert!(bounds.origin.x >= px(0.0));
         assert!(bounds.origin.x + bounds.size.width <= px(1568.0));
+        assert!(
+            window_cx
+                .debug_bounds("patch-select-main-panel-color")
+                .is_some()
+        );
+        assert!(
+            window_cx
+                .debug_bounds("patch-selection-state-main-panel-color-selected")
+                .is_some()
+        );
+        assert!(
+            window_cx
+                .debug_bounds("patch-option-summary-main-panel-color")
+                .is_some()
+        );
+        assert!(
+            window_cx
+                .debug_bounds("patch-options-toggle-main-panel-color")
+                .is_some()
+        );
+        assert!(
+            window_cx
+                .debug_bounds("patch-option-editor-main-panel-color")
+                .is_none()
+        );
+
+        let option_toggle = window_cx
+            .debug_bounds("patch-options-toggle-main-panel-color")
+            .expect("option dropdown should have a clickable control");
+        window_cx.simulate_click(option_toggle.center(), gpui::Modifiers::default());
+        window_cx.run_until_parked();
+
+        assert!(
+            window_cx
+                .debug_bounds("patch-option-editor-main-panel-color")
+                .is_some()
+        );
+        assert!(
+            window_cx
+                .debug_bounds("patch-option-field-main-panel-color")
+                .is_some()
+        );
+        let selection_toggle = window_cx
+            .debug_bounds("patch-select-main-panel-color")
+            .expect("tweak should have a clickable selection checkbox");
+        window_cx.simulate_click(selection_toggle.center(), gpui::Modifiers::default());
+        window_cx.run_until_parked();
+        assert!(
+            window_cx
+                .debug_bounds("patch-selection-state-main-panel-color-unselected")
+                .is_some()
+        );
+        assert!(
+            window_cx
+                .debug_bounds("input-tile-text-color-Red")
+                .is_none()
+        );
+        assert!(
+            window_cx
+                .debug_bounds("reset-appearance-defaults")
+                .is_some()
+        );
+        assert!(
+            window_cx
+                .debug_bounds("patch-option-editor-main-panel-color")
+                .is_some()
+        );
     }
+    #[gpui::test]
+    async fn appearance_settings_save_with_connection_port(cx: &TestAppContext) {
+        let mut app_cx = (*cx).clone();
+        let (_view, window_cx) = app_cx.add_window_view(|window, cx| {
+            let mut config = UserConfig::default();
+            config.port = 1111;
+            let settings_fields = SettingsFields::new(&config, cx);
+            settings_fields
+                .port
+                .update(cx, |field, cx| field.set_text("2222".into(), window, cx));
+            let text_color = settings_fields
+                .appearance
+                .inputs
+                .iter()
+                .find(|(id, _)| *id == "input-tile-text-color")
+                .unwrap()
+                .1
+                .clone();
+            text_color.update(cx, |field, cx| field.set_text("#00AACC".into(), window, cx));
+
+            let saved = settings_fields.to_config(&config, cx).unwrap();
+            assert_eq!(saved.port, 2222);
+            assert_eq!(saved.patch_options.input_tile_text_color, "#00AACC");
+
+            AppView {
+                settings_file: None,
+                config: saved,
+                settings_fields,
+                settings_open: true,
+                settings_load_failed: false,
+                selected_ids: BTreeSet::new(),
+                expanded_patch_ids: BTreeSet::new(),
+                plan: None,
+                busy: false,
+                error: None,
+                status: "Test".into(),
+                show_diff: false,
+                confirm_unverified: false,
+                confirm_root_recovery: false,
+                confirm_refresh: false,
+                deployment_status: "Not applied".into(),
+                refresh_status: "Not restarted".into(),
+                visual_result: "Not checked".into(),
+            }
+        });
+        window_cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    async fn save_appearance_button_persists_options_without_overwriting_connection_settings(
+        cx: &TestAppContext,
+    ) {
+        let mut app_cx = (*cx).clone();
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!(
+                "gui-appearance-save-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        let path = root.join("config.toml");
+        let mut initial = UserConfig::default();
+        initial.ssh_target = "root@tv.local".into();
+        initial.ssh_config_file = "before/ssh_config".into();
+        initial.patch_options.main_panel_color = "#112233".into();
+        config::save_at(&path, &initial).unwrap();
+
+        let app_path = path.clone();
+        let (_view, window_cx) = app_cx.add_window_view(move |window, cx| {
+            let config = initial.clone();
+            let settings_fields = SettingsFields::new(&config, cx);
+            settings_fields
+                .appearance
+                .input("main-panel-color")
+                .update(cx, |field, cx| field.set_text("#445566".into(), window, cx));
+            AppView {
+                settings_file: Some(SettingsFile::Explicit(app_path)),
+                config,
+                settings_fields,
+                settings_open: false,
+                settings_load_failed: false,
+                selected_ids: BTreeSet::new(),
+                expanded_patch_ids: BTreeSet::new(),
+                plan: None,
+                busy: false,
+                error: None,
+                status: "Test".into(),
+                show_diff: false,
+                confirm_unverified: false,
+                confirm_root_recovery: false,
+                confirm_refresh: false,
+                deployment_status: "Not applied".into(),
+                refresh_status: "Not restarted".into(),
+                visual_result: "Not checked".into(),
+            }
+        });
+        window_cx.simulate_resize(size(px(1568.0), px(2400.0)));
+        window_cx.run_until_parked();
+        let save_button = window_cx
+            .debug_bounds("save-appearance-options")
+            .expect("appearance save action should be rendered");
+        window_cx.simulate_click(save_button.center(), gpui::Modifiers::default());
+        window_cx.run_until_parked();
+
+        let saved = config::load_or_create_at(&path).unwrap();
+        assert_eq!(saved.patch_options.main_panel_color, "#445566");
+        assert_eq!(saved.ssh_target, "root@tv.local");
+        assert_eq!(saved.ssh_config_file, "before/ssh_config");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[gpui::test]
+    async fn appearance_save_refuses_to_overwrite_settings_after_load_failure(cx: &TestAppContext) {
+        let mut app_cx = (*cx).clone();
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!(
+                "gui-appearance-load-failure-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        let path = root.join("config.toml");
+        let original =
+            "ssh_target = \"root@tv.local\"\n[patch_options]\nmain_panel_opacity = 2.0\n";
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&path, original).unwrap();
+
+        let app_path = path.clone();
+        let (_view, window_cx) =
+            app_cx.add_window_view(move |_, cx| AppView::new(Some(app_path), cx));
+        window_cx.simulate_resize(size(px(1568.0), px(2400.0)));
+        window_cx.run_until_parked();
+        let save_button = window_cx
+            .debug_bounds("save-appearance-options")
+            .expect("appearance save action should be rendered");
+        window_cx.simulate_click(save_button.center(), gpui::Modifiers::default());
+        window_cx.run_until_parked();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn explicit_settings_file_is_loaded_and_saved_by_the_gui_store() {
         let root = std::env::current_dir()

@@ -13,7 +13,7 @@ use thiserror::Error;
 
 use crate::config::{self, ConfigError, UserConfig, identity_path, ssh_config_path};
 use crate::patcher::{self, PatchError};
-use crate::patches::{PATCHES, TARGETS};
+use crate::patches::{PATCH_OPTION_SPECS, PATCHES, PatchOptions, TARGETS};
 
 const ASKPASS_SCRIPT: &str = include_str!("../support/ssh-askpass.sh");
 const TESTED_FIRMWARE_LABEL: Option<&str> = None;
@@ -312,6 +312,7 @@ pub struct DeploymentPlan {
     pub mode: InstallMode,
     pub model: String,
     pub firmware_label: String,
+    pub patch_options: PatchOptions,
     pub selected_ids: BTreeSet<String>,
     pub selected_labels: Vec<&'static str>,
     pub patched_files: BTreeMap<String, String>,
@@ -382,7 +383,7 @@ pub fn prepare_plan(
         ));
     }
     let sources = decode_source_archive(&archive)?;
-    let patched = patcher::patch_qml(&sources, selected_ids)?;
+    let patched = patcher::patch_qml(&sources, selected_ids, &config.patch_options)?;
     let diff = make_diff(&sources, &patched.files);
     let target_hashes = sources
         .iter()
@@ -398,6 +399,7 @@ pub fn prepare_plan(
         model: config.model.trim().to_owned(),
         firmware_label: config.firmware_label.trim().to_owned(),
         selected_ids: selected_ids.clone(),
+        patch_options: config.patch_options.clone(),
         selected_labels,
         patched_files: patched.files,
         target_hashes,
@@ -468,7 +470,7 @@ pub fn manual_report(
     refresh: &str,
     visual_result: &str,
 ) -> String {
-    manual_report_for(
+    let mut report = manual_report_for(
         Some(&plan.model),
         Some(&plan.firmware_label),
         &plan.selected_labels,
@@ -476,7 +478,26 @@ pub fn manual_report(
         deployment,
         refresh,
         visual_result,
-    )
+    );
+    report.push_str("\nAppearance options:\n");
+    let mut has_options = false;
+    for option in &PATCH_OPTION_SPECS {
+        if !plan.selected_ids.contains(option.patch_id) {
+            continue;
+        }
+        has_options = true;
+        report.push_str(&format!(
+            "  {}={}\n",
+            option.id,
+            plan.patch_options
+                .value(option.id)
+                .expect("option metadata must map to a value")
+        ));
+    }
+    if !has_options {
+        report.push_str("  (none applicable to selected edits)\n");
+    }
+    report
 }
 
 pub fn deployment_success_summary(applied_edits: usize) -> String {
@@ -1109,6 +1130,32 @@ mod tests {
         assert!(report.contains("- First edit\n- Second edit"));
     }
 
+    #[test]
+    fn manual_report_shows_only_options_for_selected_patches() {
+        let config = UserConfig::default();
+        let patch = PATCHES
+            .iter()
+            .find(|patch| patch.id == "main-panel-color")
+            .unwrap();
+        let plan = DeploymentPlan {
+            mode: InstallMode::Fresh,
+            model: String::new(),
+            firmware_label: String::new(),
+            patch_options: config.patch_options.clone(),
+            selected_ids: BTreeSet::from([patch.id.to_owned()]),
+            selected_labels: vec![patch.label],
+            patched_files: BTreeMap::new(),
+            target_hashes: BTreeMap::new(),
+            diff: String::new(),
+            structurally_verified: PATCHES.len(),
+        };
+
+        let report = manual_report(&plan, "Not applied", "Not refreshed", "Not checked");
+
+        assert!(report.contains("main-panel-color=#000000"));
+        assert!(!report.contains("input-tile-text-color"));
+    }
+
     fn manifest_validator_script(source: &str, minimum_depth: u8) -> String {
         let start_marker = "# BEGIN shared manifest functions";
         let end_marker = "# END shared manifest functions";
@@ -1342,6 +1389,7 @@ mod tests {
             mode: InstallMode::Fresh,
             model: config.model.clone(),
             firmware_label: config.firmware_label.clone(),
+            patch_options: config.patch_options.clone(),
             selected_ids,
             selected_labels: vec![PATCHES[0].label],
             patched_files: TARGETS
@@ -1400,6 +1448,7 @@ mod tests {
             model: String::new(),
             firmware_label: String::new(),
             selected_ids: BTreeSet::new(),
+            patch_options: config.patch_options.clone(),
             selected_labels: Vec::new(),
             patched_files: BTreeMap::new(),
             target_hashes: BTreeMap::new(),

@@ -1,6 +1,8 @@
 use super::*;
-use crate::patches::{ChildObjectScope, FunctionStatementTarget, ScalarTarget};
-
+use crate::patches::{
+    ChildObjectScope, FunctionStatementTarget, PATCH_OPTION_SPECS, PatchOption, PatchValue,
+    ScalarTarget,
+};
 #[test]
 fn scalar_rule_targets_unique_child_object_by_property() {
     const RULE: PatchRule = PatchRule::Scalar {
@@ -12,7 +14,7 @@ fn scalar_rule_targets_unique_child_object_by_property() {
         }),
         property: "color",
         expected: "\"#112233\"",
-        replacement: "\"#000000\"",
+        replacement: PatchValue::Literal("\"#000000\""),
     };
     let input = r##"Item {
             id: fixtureRoot
@@ -21,7 +23,9 @@ fn scalar_rule_targets_unique_child_object_by_property() {
         }"##;
 
     let doc = QmlDoc::parse(input, "fixture.qml").unwrap();
-    let edit = locate_patch(&doc, RULE, "fixture.qml").unwrap().remove(0);
+    let edit = locate_patch(&doc, RULE, "fixture.qml", &PatchOptions::default())
+        .unwrap()
+        .remove(0);
     let mut output = input.to_owned();
     output.replace_range(edit.start..edit.end, &edit.replacement);
     assert!(output.contains("visible: isBackdrop; color: \"#000000\""));
@@ -33,10 +37,136 @@ fn scalar_rule_targets_unique_child_object_by_property() {
     ] {
         let doc = QmlDoc::parse(&ambiguous, "fixture.qml").unwrap();
         assert!(matches!(
-            locate_patch(&doc, RULE, "fixture.qml"),
+            locate_patch(&doc, RULE, "fixture.qml", &PatchOptions::default()),
             Err(PatchError::Unsupported { .. })
         ));
     }
+}
+
+#[test]
+fn dynamic_color_option_becomes_a_quoted_qml_literal() {
+    const RULE: PatchRule = PatchRule::Scalar {
+        root_id: "fixtureRoot",
+        scope: None,
+        property: "color",
+        expected: "\"#112233\"",
+        replacement: PatchValue::Option(PatchOption::InputTileTextColor),
+    };
+    let input = r##"Item { id: fixtureRoot; color: "#112233" }"##;
+    let doc = QmlDoc::parse(input, "fixture.qml").unwrap();
+    let mut options = PatchOptions::default();
+    options
+        .set_option("input-tile-text-color", "#8012abEF")
+        .unwrap();
+
+    let edit = locate_patch(&doc, RULE, "fixture.qml", &options)
+        .unwrap()
+        .remove(0);
+    let mut output = input.to_owned();
+    output.replace_range(edit.start..edit.end, &edit.replacement);
+    assert_eq!(output, r##"Item { id: fixtureRoot; color: "#8012ABEF" }"##);
+    assert!(matches!(
+        options.set_option("input-tile-text-color", "\"; invalid"),
+        Err(crate::patches::PatchOptionError::InvalidColor {
+            name: "input-tile-text-color"
+        })
+    ));
+}
+
+#[test]
+fn dynamic_opacity_and_selected_border_options_reach_qml_safely() {
+    const TARGETS: [ScalarTarget; 3] = [
+        ScalarTarget {
+            scope: None,
+            property: "opacity",
+            expected: "active ? 1 : 0.5",
+            replacement: PatchValue::Option(PatchOption::InputTileIconOpacity),
+        },
+        ScalarTarget {
+            scope: None,
+            property: "border.color",
+            expected: "active ? \"#112233\" : \"#445566\"",
+            replacement: PatchValue::Option(PatchOption::InputTileBorderColor),
+        },
+        ScalarTarget {
+            scope: None,
+            property: "border.width",
+            expected: "active ? scale(1) : scale(0.5)",
+            replacement: PatchValue::Option(PatchOption::InputTileBorderWidth),
+        },
+    ];
+    const RULE: PatchRule = PatchRule::ScalarGroup {
+        root_id: "fixtureRoot",
+        targets: &TARGETS,
+    };
+    let input = r##"Rectangle { id: fixtureRoot; opacity: active ? 1 : 0.5; border.color: active ? "#112233" : "#445566"; border.width: active ? scale(1) : scale(0.5) }"##;
+    let doc = QmlDoc::parse(input, "fixture.qml").unwrap();
+    let mut options = PatchOptions::default();
+    options
+        .set_option("input-tile-icon-opacity", "0.75")
+        .unwrap();
+    options
+        .set_option("input-tile-border-color", "#80a1b2c3")
+        .unwrap();
+    options
+        .set_option("input-tile-border-width", "2.5")
+        .unwrap();
+
+    let mut edits = locate_patch(&doc, RULE, "fixture.qml", &options).unwrap();
+    edits.sort_by_key(|edit| std::cmp::Reverse(edit.start));
+    let mut output = input.to_owned();
+    for edit in edits {
+        output.replace_range(edit.start..edit.end, &edit.replacement);
+    }
+    assert_eq!(
+        output,
+        r##"Rectangle { id: fixtureRoot; opacity: 0.75; border.color: entry.currentInput ? "#80A1B2C3" : "transparent"; border.width: entry.currentInput ? styler.getRelativeValue(2.5) : 0 }"##
+    );
+}
+
+#[test]
+fn appearance_numeric_options_reject_values_outside_their_ranges() {
+    let mut options = PatchOptions::default();
+    options.set_option("main-panel-opacity", "0").unwrap();
+    options.set_option("input-tile-icon-opacity", "1").unwrap();
+    options
+        .set_option("input-tile-border-width", "100")
+        .unwrap();
+    options.validate().unwrap();
+
+    for (id, value, name) in [
+        ("main-panel-opacity", "1.01", "main-panel-opacity"),
+        ("input-tile-icon-opacity", "NaN", "input-tile-icon-opacity"),
+        ("input-tile-border-width", "-0.1", "input-tile-border-width"),
+        (
+            "input-tile-border-width",
+            "100.1",
+            "input-tile-border-width",
+        ),
+    ] {
+        assert!(matches!(
+            options.set_option(id, value),
+            Err(crate::patches::PatchOptionError::InvalidNumber {
+                name: actual,
+                ..
+            }) if actual == name
+        ));
+    }
+}
+
+#[test]
+fn option_specs_are_authoritative_for_defaults_and_value_access() {
+    let mut options = PatchOptions::default();
+    for spec in &PATCH_OPTION_SPECS {
+        assert_eq!(
+            options.value(spec.id).as_deref(),
+            Some(spec.default),
+            "default for `{}` must come from its option specification",
+            spec.id
+        );
+        options.set_option(spec.id, spec.default).unwrap();
+    }
+    options.validate().unwrap();
 }
 
 #[test]
@@ -50,7 +180,7 @@ fn scalar_group_edits_each_uniquely_scoped_child() {
             }),
             property: "opacity",
             expected: "1",
-            replacement: "0",
+            replacement: PatchValue::Literal("0"),
         },
         ScalarTarget {
             scope: Some(ChildObjectScope {
@@ -60,7 +190,7 @@ fn scalar_group_edits_each_uniquely_scoped_child() {
             }),
             property: "opacity",
             expected: "1",
-            replacement: "0",
+            replacement: PatchValue::Literal("0"),
         },
     ];
     const RULE: PatchRule = PatchRule::ScalarGroup {
@@ -75,7 +205,7 @@ fn scalar_group_edits_each_uniquely_scoped_child() {
         }"#;
 
     let doc = QmlDoc::parse(input, "fixture.qml").unwrap();
-    let mut edits = locate_patch(&doc, RULE, "fixture.qml").unwrap();
+    let mut edits = locate_patch(&doc, RULE, "fixture.qml", &PatchOptions::default()).unwrap();
     edits.sort_by_key(|edit| std::cmp::Reverse(edit.start));
     let mut output = input.to_owned();
     for edit in edits {
@@ -88,7 +218,7 @@ fn scalar_group_edits_each_uniquely_scoped_child() {
     let ambiguous = input.replace("id: second", "id: first");
     let doc = QmlDoc::parse(&ambiguous, "fixture.qml").unwrap();
     assert!(matches!(
-        locate_patch(&doc, RULE, "fixture.qml"),
+        locate_patch(&doc, RULE, "fixture.qml", &PatchOptions::default()),
         Err(PatchError::Unsupported { .. })
     ));
 }
@@ -99,7 +229,7 @@ fn scalar_group_edits_a_qualified_root_property() {
         scope: None,
         property: "border.width",
         expected: "entry.activate ? styler.getRelativeValue(1) : styler.getRelativeValue(0.5)",
-        replacement: "entry.currentInput ? styler.getRelativeValue(1) : 0",
+        replacement: PatchValue::Literal("entry.currentInput ? styler.getRelativeValue(1) : 0"),
     }];
     const RULE: PatchRule = PatchRule::ScalarGroup {
         root_id: "fixtureRoot",
@@ -112,7 +242,9 @@ fn scalar_group_edits_a_qualified_root_property() {
         }"#;
 
     let doc = QmlDoc::parse(input, "fixture.qml").unwrap();
-    let edit = locate_patch(&doc, RULE, "fixture.qml").unwrap().remove(0);
+    let edit = locate_patch(&doc, RULE, "fixture.qml", &PatchOptions::default())
+        .unwrap()
+        .remove(0);
     let mut output = input.to_owned();
     output.replace_range(edit.start..edit.end, &edit.replacement);
     assert!(output.contains("border.width: entry.currentInput ? styler.getRelativeValue(1) : 0"));
@@ -124,7 +256,7 @@ fn scalar_group_edits_a_qualified_root_property() {
     );
     let doc = QmlDoc::parse(&ambiguous, "fixture.qml").unwrap();
     assert!(matches!(
-        locate_patch(&doc, RULE, "fixture.qml"),
+        locate_patch(&doc, RULE, "fixture.qml", &PatchOptions::default()),
         Err(PatchError::Unsupported { .. })
     ));
 }
@@ -153,7 +285,9 @@ fn if_condition_rule_is_scoped_and_requires_exact_count() {
         }"#;
 
     let doc = QmlDoc::parse(input, "fixture.qml").unwrap();
-    let edit = locate_patch(&doc, RULE, "fixture.qml").unwrap().remove(0);
+    let edit = locate_patch(&doc, RULE, "fixture.qml", &PatchOptions::default())
+        .unwrap()
+        .remove(0);
     let mut output = input.to_owned();
     output.replace_range(edit.start..edit.end, &edit.replacement);
     assert!(output.contains("if (connected && active && !dongleConnected)"));
@@ -168,7 +302,7 @@ fn if_condition_rule_is_scoped_and_requires_exact_count() {
     );
     let doc = QmlDoc::parse(&duplicate, "fixture.qml").unwrap();
     assert!(matches!(
-        locate_patch(&doc, RULE, "fixture.qml"),
+        locate_patch(&doc, RULE, "fixture.qml", &PatchOptions::default()),
         Err(PatchError::Unsupported { .. })
     ));
 }
@@ -210,7 +344,13 @@ fn home_hub_patch_reindexes_input_updates_and_guards_empty_view() {
         ),
     ]);
     let selected = BTreeSet::from([patch.id.to_owned()]);
-    let mut edits = collect_patch_edits(&docs, std::slice::from_ref(patch), &selected).unwrap();
+    let mut edits = collect_patch_edits(
+        &docs,
+        std::slice::from_ref(patch),
+        &selected,
+        &PatchOptions::default(),
+    )
+    .unwrap();
     let mut app_edits = edits.remove(TARGETS[6]).unwrap();
     app_edits.sort_by_key(|edit| std::cmp::Reverse(edit.start));
     let mut app_output = app_interfaces.to_owned();
@@ -256,7 +396,7 @@ fn function_statements_are_scoped_and_require_exact_count() {
         }
     }"#;
     let doc = QmlDoc::parse(input, "fixture.qml").unwrap();
-    let mut edits = locate_patch(&doc, RULE, "fixture.qml").unwrap();
+    let mut edits = locate_patch(&doc, RULE, "fixture.qml", &PatchOptions::default()).unwrap();
     edits.sort_by_key(|edit| std::cmp::Reverse(edit.start));
     let mut output = input.to_owned();
     for edit in edits {
@@ -279,7 +419,7 @@ fn function_statements_are_scoped_and_require_exact_count() {
     ] {
         let doc = QmlDoc::parse(&unexpected_count, "fixture.qml").unwrap();
         assert!(matches!(
-            locate_patch(&doc, RULE, "fixture.qml"),
+            locate_patch(&doc, RULE, "fixture.qml", &PatchOptions::default()),
             Err(PatchError::Unsupported { .. })
         ));
     }
@@ -306,7 +446,7 @@ fn function_statement_rule_rejects_calls_inside_expressions() {
 
     let doc = QmlDoc::parse(input, "fixture.qml").unwrap();
     assert!(matches!(
-        locate_patch(&doc, RULE, "fixture.qml"),
+        locate_patch(&doc, RULE, "fixture.qml", &PatchOptions::default()),
         Err(PatchError::Unsupported { .. })
     ));
 }
@@ -323,7 +463,7 @@ fn unselected_patch_sites_are_still_validated() {
                 scope: None,
                 property: "color",
                 expected: "\"#112233\"",
-                replacement: "\"#000000\"",
+                replacement: PatchValue::Literal("\"#000000\""),
             },
             id: "selected",
             label: "selected patch",
@@ -335,7 +475,7 @@ fn unselected_patch_sites_are_still_validated() {
                 scope: None,
                 property: "color",
                 expected: "\"#445566\"",
-                replacement: "\"#000000\"",
+                replacement: PatchValue::Literal("\"#000000\""),
             },
             id: "unselected",
             label: "unselected patch",
@@ -344,7 +484,7 @@ fn unselected_patch_sites_are_still_validated() {
     ];
     let selected = BTreeSet::from(["selected".to_owned()]);
 
-    let error = collect_patch_edits(&docs, &patches, &selected)
+    let error = collect_patch_edits(&docs, &patches, &selected, &PatchOptions::default())
         .err()
         .unwrap();
     assert_eq!(

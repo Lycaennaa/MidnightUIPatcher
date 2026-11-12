@@ -1,3 +1,8 @@
+pub(crate) use crate::patch_options::PatchOption;
+pub use crate::patch_options::{
+    PATCH_OPTION_SPECS, PatchOptionError, PatchOptionKind, PatchOptionSpec, PatchOptions,
+};
+
 pub const TARGETS: [&str; 8] = [
     "usr/lib/qml/QuickSettings/Containers/QuickSettingsMainView.qml",
     "usr/lib/qml/QuickSettings/Component/BaseControlPanelButton.qml",
@@ -20,7 +25,7 @@ pub(crate) struct ScalarTarget {
     pub(crate) scope: Option<ChildObjectScope>,
     pub(crate) property: &'static str,
     pub(crate) expected: &'static str,
-    pub(crate) replacement: &'static str,
+    pub(crate) replacement: PatchValue,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -38,7 +43,7 @@ pub(crate) enum PatchRule {
         scope: Option<ChildObjectScope>,
         property: &'static str,
         expected: &'static str,
-        replacement: &'static str,
+        replacement: PatchValue,
     },
     ExpressionLiterals {
         root_id: &'static str,
@@ -47,7 +52,7 @@ pub(crate) enum PatchRule {
         expected_count: usize,
         required_identifiers: &'static [&'static str],
         required_operators: &'static [&'static str],
-        replacement: &'static str,
+        replacement: PatchValue,
     },
     ScalarGroup {
         root_id: &'static str,
@@ -105,6 +110,21 @@ impl PatchSpec {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum PatchValue {
+    Literal(&'static str),
+    Option(PatchOption),
+}
+
+impl PatchOptions {
+    pub(crate) fn replacement(&self, value: PatchValue) -> String {
+        match value {
+            PatchValue::Literal(text) => text.to_owned(),
+            PatchValue::Option(option) => self.option_replacement(option),
+        }
+    }
+}
+
 const MAIN_PANEL_CHILD: ChildObjectScope = ChildObjectScope {
     class: "Rectangle",
     property: "visible",
@@ -120,7 +140,7 @@ const INPUT_TILE_ICON_EDITS: [ScalarTarget; 3] = [
         }),
         property: "opacity",
         expected: "entry.activate ? 1 : 0.5",
-        replacement: "0",
+        replacement: PatchValue::Option(PatchOption::InputTileIconOpacity),
     },
     ScalarTarget {
         scope: Some(ChildObjectScope {
@@ -130,7 +150,7 @@ const INPUT_TILE_ICON_EDITS: [ScalarTarget; 3] = [
         }),
         property: "opacity",
         expected: "entry.activate ? 1 : 0.5",
-        replacement: "0",
+        replacement: PatchValue::Option(PatchOption::InputTileIconOpacity),
     },
     ScalarTarget {
         scope: Some(ChildObjectScope {
@@ -140,7 +160,7 @@ const INPUT_TILE_ICON_EDITS: [ScalarTarget; 3] = [
         }),
         property: "visible",
         expected: "entry.currentInput ? entry.currentInput : false",
-        replacement: "false",
+        replacement: PatchValue::Literal("false"),
     },
 ];
 
@@ -153,7 +173,7 @@ const INPUT_TILE_TEXT_EDITS: [ScalarTarget; 2] = [
         }),
         property: "color",
         expected: "entry.activate && (entry.status === \"connected\" || entry.status === undefined) ? \"#000000\" : \"#808080\"",
-        replacement: "\"#FF0000\"",
+        replacement: PatchValue::Option(PatchOption::InputTileTextColor),
     },
     ScalarTarget {
         scope: Some(ChildObjectScope {
@@ -163,7 +183,7 @@ const INPUT_TILE_TEXT_EDITS: [ScalarTarget; 2] = [
         }),
         property: "color",
         expected: "entry.activate ? \"#4D4D4D\" : \"#808080\"",
-        replacement: "\"#FF0000\"",
+        replacement: PatchValue::Option(PatchOption::InputTileTextColor),
     },
 ];
 
@@ -172,13 +192,13 @@ const INPUT_TILE_BORDER_EDITS: [ScalarTarget; 2] = [
         scope: None,
         property: "border.color",
         expected: "entry.activate ? \"#FFFFFFFF\" : \"#26FFFFFF\"",
-        replacement: "entry.currentInput ? \"#FFFFFFFF\" : \"transparent\"",
+        replacement: PatchValue::Option(PatchOption::InputTileBorderColor),
     },
     ScalarTarget {
         scope: None,
         property: "border.width",
         expected: "entry.activate ? styler.getRelativeValue(1) : styler.getRelativeValue(0.5)",
-        replacement: "entry.currentInput ? styler.getRelativeValue(1) : 0",
+        replacement: PatchValue::Option(PatchOption::InputTileBorderWidth),
     },
 ];
 const INPUT_HOME_HUB_STATEMENTS: [FunctionStatementTarget; 2] = [
@@ -234,10 +254,10 @@ pub const PATCHES: [PatchSpec; 17] = [
             scope: Some(MAIN_PANEL_CHILD),
             property: "color",
             expected: "\"#323941\"",
-            replacement: "\"#000000\"",
+            replacement: PatchValue::Option(PatchOption::MainPanelColor),
         },
         id: "main-panel-color",
-        label: "Set panel backdrop color to black",
+        label: "Set panel backdrop color",
         target: TARGETS[0],
     },
     PatchSpec {
@@ -246,10 +266,10 @@ pub const PATCHES: [PatchSpec; 17] = [
             scope: Some(MAIN_PANEL_CHILD),
             property: "opacity",
             expected: "0.95",
-            replacement: "1.0",
+            replacement: PatchValue::Option(PatchOption::MainPanelOpacity),
         },
         id: "main-panel-opacity",
-        label: "Make panel backdrop fully opaque",
+        label: "Set panel backdrop opacity",
         target: TARGETS[0],
     },
     PatchSpec {
@@ -258,7 +278,7 @@ pub const PATCHES: [PatchSpec; 17] = [
             scope: Some(MAIN_PANEL_CHILD),
             property: "visible",
             expected: "interfaces.systemInfo.checkBackGround",
-            replacement: "false",
+            replacement: PatchValue::Literal("false"),
         },
         id: "main-panel-visibility",
         label: "Hide the full-panel backdrop",
@@ -270,10 +290,10 @@ pub const PATCHES: [PatchSpec; 17] = [
             scope: None,
             property: "color",
             expected: "\"#2E3741\"",
-            replacement: "\"#000000\"",
+            replacement: PatchValue::Option(PatchOption::MenuPopupColor),
         },
         id: "menu-popup-color",
-        label: "Set the menu popup background to black",
+        label: "Set the menu popup background color",
         target: TARGETS[0],
     },
     PatchSpec {
@@ -282,10 +302,10 @@ pub const PATCHES: [PatchSpec; 17] = [
             scope: None,
             property: "bgColor",
             expected: "\"#575E66\"",
-            replacement: "\"#000000\"",
+            replacement: PatchValue::Option(PatchOption::ButtonDefaultColor),
         },
         id: "button-default-color",
-        label: "Set the tile default fill to black",
+        label: "Set the tile default fill color",
         target: TARGETS[1],
     },
     PatchSpec {
@@ -296,10 +316,10 @@ pub const PATCHES: [PatchSpec; 17] = [
             expected_count: 2,
             required_identifiers: &["objDeactive", "hasFocus"],
             required_operators: &["?", ":"],
-            replacement: "\"#000000\"",
+            replacement: PatchValue::Option(PatchOption::ButtonIdleFill),
         },
         id: "button-idle-fill",
-        label: "Set idle tile fills to black",
+        label: "Set idle tile fill color",
         target: TARGETS[1],
     },
     PatchSpec {
@@ -312,7 +332,7 @@ pub const PATCHES: [PatchSpec; 17] = [
             }),
             property: "source",
             expected: "styler.gradationBG",
-            replacement: "\"\"",
+            replacement: PatchValue::Literal("\"\""),
         },
         id: "input-screen-backdrop",
         label: "Remove the input screen background",
@@ -328,7 +348,7 @@ pub const PATCHES: [PatchSpec; 17] = [
             }),
             property: "active",
             expected: "hasFocus",
-            replacement: "false",
+            replacement: PatchValue::Literal("false"),
         },
         id: "input-tile-shadow",
         label: "Remove the shadow behind input tiles",
@@ -369,7 +389,9 @@ pub const PATCHES: [PatchSpec; 17] = [
             scope: None,
             property: "visible",
             expected: "entry && entry.showCategory ? entry.showCategory : false",
-            replacement: "entry && entry.showCategory && entry.category !== stringSheet.input && entry.category !== stringSheet.inputMNT ? entry.showCategory : false",
+            replacement: PatchValue::Literal(
+                "entry && entry.showCategory && entry.category !== stringSheet.input && entry.category !== stringSheet.inputMNT ? entry.showCategory : false",
+            ),
         },
         id: "input-category-text",
         label: "Hide the TV / Inputs category text",
@@ -381,7 +403,9 @@ pub const PATCHES: [PatchSpec; 17] = [
             scope: None,
             property: "visible",
             expected: "(entry.hasOwnProperty('addOnInfo') && entry.addOnInfo) &&",
-            replacement: "(entry.hasOwnProperty('addOnInfo') && entry.addOnInfo && entry.addOnInfo.type !== 'deviceControl') &&",
+            replacement: PatchValue::Literal(
+                "(entry.hasOwnProperty('addOnInfo') && entry.addOnInfo && entry.addOnInfo.type !== 'deviceControl') &&",
+            ),
         },
         id: "input-universal-control",
         label: "Hide the Universal Control settings button",
@@ -397,10 +421,10 @@ pub const PATCHES: [PatchSpec; 17] = [
             }),
             property: "color",
             expected: "entry.activate ? \"#E6E6E6\" : entry.type === \"title\" ? \"#575E66\" : \"#A6A6A6\"",
-            replacement: "\"transparent\"",
+            replacement: PatchValue::Option(PatchOption::InputTileBackgroundColor),
         },
         id: "input-tile-background",
-        label: "Remove the input tile background",
+        label: "Set the input tile background color",
         target: TARGETS[3],
     },
     PatchSpec {
@@ -409,7 +433,7 @@ pub const PATCHES: [PatchSpec; 17] = [
             targets: &INPUT_TILE_ICON_EDITS,
         },
         id: "input-tile-icons",
-        label: "Remove the input tile icons",
+        label: "Set input tile icon opacity",
         target: TARGETS[4],
     },
     PatchSpec {
@@ -418,7 +442,7 @@ pub const PATCHES: [PatchSpec; 17] = [
             targets: &INPUT_TILE_TEXT_EDITS,
         },
         id: "input-tile-red-text",
-        label: "Make input tile text red",
+        label: "Set input tile text color",
         target: TARGETS[4],
     },
     PatchSpec {

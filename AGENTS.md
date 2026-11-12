@@ -25,3 +25,10 @@
 - The full Quick Settings panel background is transparent.
 - Idle tile fills are black. Preserve existing focus and disabled fill colors, and keep a visible focus indicator unless the owner explicitly requests a change.
 - Source matches come from each owner's TV at runtime. Do not rely on old captured-file hashes; inspect the live hook, marker, lock, mounts, target hashes, and backup manifest before every device update.
+
+## Configurable appearance options
+
+- `src/patch_options.rs` is canonical for typed appearance option IDs, defaults, kinds, and bounds; `src/patches.rs` is canonical for patch-site mappings. Every existing patch output that controls color, transparency, opacity, or border width/icon opacity should use a validated option in both GUI and CLI; never accept raw QML as an option.
+- Keep structural and logic edits as independent patch toggles. Preserve Quick Settings focus/disabled colors and the visible focus indicator; do not add new QML style changes (such as border radius) unless separately requested.
+- Store saved appearance values in the user-local config with backward-compatible defaults. CLI `--patch-option KEY=VALUE` overrides only named values; `--save-options` persists only explicit overrides before device work. The reviewed plan must continue to include generated QML so an apply recheck detects changed options.
+- Keep each tweak's appearance controls in a collapsed-by-default options menu in the GUI. Colors use Qt hex `#RRGGBB` or alpha-first `#AARRGGBB`; opacity and border width use bounded numeric fields. CLI validation must enforce the same formats, reject malformed values, and retain the reset-to-defaults action. Update the option list, README, tests, and this guidance when adding or changing an option.

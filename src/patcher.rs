@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use thiserror::Error;
 
-use crate::patches::{PATCHES, PatchRule, PatchSpec, TARGETS};
+use crate::patches::{PATCHES, PatchOptions, PatchRule, PatchSpec, TARGETS};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PatchError {
@@ -17,6 +17,8 @@ pub enum PatchError {
     Unsupported { file: String, detail: String },
     #[error("unknown patch identifier: {0}")]
     UnknownPatch(String),
+    #[error(transparent)]
+    InvalidOption(#[from] crate::patches::PatchOptionError),
     #[error("select at least one patch")]
     EmptySelection,
 }
@@ -47,8 +49,9 @@ fn append_site_edits(
     rule: PatchRule,
     target: &str,
     selected: bool,
+    options: &PatchOptions,
 ) -> Result<(), PatchError> {
-    let mut patch_edits = locate_patch(doc, rule, target)?;
+    let mut patch_edits = locate_patch(doc, rule, target, options)?;
     if selected {
         edits
             .entry(target.to_owned())
@@ -62,6 +65,7 @@ fn collect_patch_edits(
     docs: &BTreeMap<String, QmlDoc<'_>>,
     patches: &[PatchSpec],
     selected: &BTreeSet<String>,
+    options: &PatchOptions,
 ) -> Result<BTreeMap<String, Vec<Edit>>, PatchError> {
     let mut edits: BTreeMap<String, Vec<Edit>> = BTreeMap::new();
     for patch in patches {
@@ -81,6 +85,7 @@ fn collect_patch_edits(
                         site.rule,
                         site.target,
                         is_selected,
+                        options,
                     )?;
                 }
             }
@@ -90,6 +95,7 @@ fn collect_patch_edits(
                 rule,
                 patch.target,
                 is_selected,
+                options,
             )?,
         }
     }
@@ -99,7 +105,9 @@ fn collect_patch_edits(
 pub fn patch_qml(
     sources: &BTreeMap<String, String>,
     selected: &BTreeSet<String>,
+    options: &PatchOptions,
 ) -> Result<PatchOutput, PatchError> {
+    options.validate()?;
     if selected.is_empty() {
         return Err(PatchError::EmptySelection);
     }
@@ -116,8 +124,7 @@ pub fn patch_qml(
         docs.insert(path.to_owned(), QmlDoc::parse(source, path)?);
     }
 
-    let mut edits = collect_patch_edits(&docs, &PATCHES, selected)?;
-
+    let mut edits = collect_patch_edits(&docs, &PATCHES, selected, options)?;
     let mut output = BTreeMap::new();
     for (path, doc) in docs {
         let mut text = doc.source().to_owned();
@@ -178,7 +185,12 @@ fn condition_edits(
         .collect())
 }
 
-fn locate_patch(doc: &QmlDoc<'_>, rule: PatchRule, file: &str) -> Result<Vec<Edit>, PatchError> {
+fn locate_patch(
+    doc: &QmlDoc<'_>,
+    rule: PatchRule,
+    file: &str,
+    options: &PatchOptions,
+) -> Result<Vec<Edit>, PatchError> {
     match rule {
         PatchRule::Scalar {
             root_id,
@@ -198,7 +210,8 @@ fn locate_patch(doc: &QmlDoc<'_>, rule: PatchRule, file: &str) -> Result<Vec<Edi
                 )?,
                 None => root,
             };
-            scalar_edit(doc, scope, property, expected, replacement, file)
+            let replacement = options.replacement(replacement);
+            scalar_edit(doc, scope, property, expected, &replacement, file)
         }
         PatchRule::ExpressionLiterals {
             root_id,
@@ -219,12 +232,13 @@ fn locate_patch(doc: &QmlDoc<'_>, rule: PatchRule, file: &str) -> Result<Vec<Edi
                 required_operators,
                 file,
             )?;
+            let replacement = options.replacement(replacement);
             Ok(spans
                 .into_iter()
                 .map(|span| Edit {
                     start: span.start,
                     end: span.end,
-                    replacement: replacement.to_owned(),
+                    replacement: replacement.clone(),
                 })
                 .collect())
         }
@@ -245,12 +259,13 @@ fn locate_patch(doc: &QmlDoc<'_>, rule: PatchRule, file: &str) -> Result<Vec<Edi
                     )?,
                     None => root,
                 };
+                let replacement = options.replacement(target.replacement);
                 edits.extend(scalar_edit(
                     doc,
                     scope,
                     target.property,
                     target.expected,
-                    target.replacement,
+                    &replacement,
                     file,
                 )?);
             }
