@@ -5,6 +5,7 @@ use crate::patches::{
 };
 mod appearance_options;
 mod input_banner;
+mod no_signal;
 fn apply_edits(source: &str, mut edits: Vec<Edit>) -> String {
     edits.sort_by_key(|edit| std::cmp::Reverse(edit.start));
     let mut output = source.to_owned();

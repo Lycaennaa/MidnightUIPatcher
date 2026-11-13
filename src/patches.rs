@@ -3,8 +3,9 @@ pub use crate::patch_options::{
     PATCH_OPTION_SPECS, PatchOptionError, PatchOptionKind, PatchOptionSpec, PatchOptions,
 };
 mod input_banner;
+mod no_signal;
 
-pub const TARGETS: [&str; 10] = [
+pub const TARGETS: [&str; 12] = [
     "usr/lib/qml/QuickSettings/Containers/QuickSettingsMainView.qml",
     "usr/lib/qml/QuickSettings/Component/BaseControlPanelButton.qml",
     "usr/lib/qml/InputPicker/Containers/RootView.qml",
@@ -15,6 +16,8 @@ pub const TARGETS: [&str; 10] = [
     "usr/lib/qml/InputPicker/Controllers/ConnectionsInterfaces/Interfaces.qml",
     "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/InputBanner.qml",
     "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/SimpleBanner.qml",
+    "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/BgViewLayer/Screensaver.qml",
+    "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/BgViewLayer/ScreensaverMainText.qml",
 ];
 
 #[derive(Clone, Copy, Debug)]
@@ -100,16 +103,23 @@ pub(crate) enum PatchArea {
     QuickSettings,
     InputPicker,
     InputBanner,
+    NoSignal,
 }
 
 impl PatchArea {
-    pub(crate) const ALL: [Self; 3] = [Self::QuickSettings, Self::InputPicker, Self::InputBanner];
+    pub(crate) const ALL: [Self; 4] = [
+        Self::QuickSettings,
+        Self::InputPicker,
+        Self::InputBanner,
+        Self::NoSignal,
+    ];
 
     pub(crate) const fn id(self) -> &'static str {
         match self {
             Self::QuickSettings => "quick-settings",
             Self::InputPicker => "input-picker",
             Self::InputBanner => "input-banner",
+            Self::NoSignal => "no-signal",
         }
     }
 
@@ -118,6 +128,7 @@ impl PatchArea {
             Self::QuickSettings => "Quick Settings",
             Self::InputPicker => "Input Picker",
             Self::InputBanner => "Input Banner",
+            Self::NoSignal => "No Signal",
         }
     }
 }
@@ -257,7 +268,7 @@ const INPUT_HOME_HUB_SITES: [PatchSite; 1] = [PatchSite {
     },
 }];
 
-pub const PATCHES: [PatchSpec; 21] = [
+pub const PATCHES: [PatchSpec; 24] = [
     PatchSpec {
         area: PatchArea::QuickSettings,
         rule: PatchRule::Scalar {
@@ -485,6 +496,9 @@ pub const PATCHES: [PatchSpec; 21] = [
     input_banner::TEXT_COLOR,
     input_banner::DIVIDER,
     input_banner::MENU_STYLE,
+    no_signal::ANIMATION,
+    no_signal::INSTRUCTIONS,
+    no_signal::TEXT_COLOR,
 ];
 
 #[cfg(test)]

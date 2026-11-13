@@ -3,7 +3,7 @@
 valid_qml_path() {
     [ "$#" -eq 1 ] || return 1
     case "$1" in
-        usr/lib/qml/*|usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/InputBanner.qml|usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/SimpleBanner.qml) ;;
+        usr/lib/qml/*|usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/InputBanner.qml|usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/SimpleBanner.qml|usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/BgViewLayer/Screensaver.qml|usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/BgViewLayer/ScreensaverMainText.qml) ;;
         *) return 1 ;;
     esac
     case "$1" in
@@ -22,7 +22,8 @@ validate_backup_manifest() {
     validate_manifest backup "${2:-4}" "$1"
 }
 backup_original_paths() {
-    awk '$2 ~ /^usr\/lib\/qml\// || $2 == "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/InputBanner.qml" || $2 == "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/SimpleBanner.qml" { print $2 }' "$1"
+    # Caller validates the manifest; non-pre-update entries are original QML paths.
+    awk '$2 !~ /^pre-update-/ { print $2 }' "$1"
 }
 
 validate_manifest() (
@@ -42,7 +43,9 @@ validate_manifest() (
     function valid_qml_path(path, min_depth, parts, count, i) {
         if (path !~ /^usr\/lib\/qml\// &&
             path != "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/InputBanner.qml" &&
-            path != "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/SimpleBanner.qml") return 0
+            path != "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/SimpleBanner.qml" &&
+            path != "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/BgViewLayer/Screensaver.qml" &&
+            path != "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/BgViewLayer/ScreensaverMainText.qml") return 0
         if (path ~ /[^A-Za-z0-9._\/-]/) return 0
         count = split(path, parts, "/")
         if (count < min_depth) return 0
@@ -85,9 +88,7 @@ validate_manifest() (
             next
         }
         entries++
-        if (mode == "backup" && ($2 ~ /^usr\/lib\/qml\// ||
-            $2 == "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/InputBanner.qml" ||
-            $2 == "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/SimpleBanner.qml")) originals++
+        if (mode == "backup" && valid_qml_path($2, min_depth)) originals++
     }
     END {
         if (invalid || entries == 0 || (mode == "backup" && originals == 0)) exit 1

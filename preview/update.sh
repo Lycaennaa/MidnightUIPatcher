@@ -391,36 +391,6 @@ if [ "$activation_failed" -ne 0 ]; then
         exit 1
     fi
     INSTALLED_FILES=$PREVIOUS_FILES
-    for rel in $PACKAGE_FILES; do
-        if ! is_historical "$rel"; then
-            if [ -e "$STATE/backups/$rel" ] || [ -L "$STATE/backups/$rel" ] ||
-               [ ! -f "$FAILED/backups/$rel" ] || [ -L "$FAILED/backups/$rel" ]; then
-                echo "Could not preserve a newly captured original during rollback: $rel" >&2
-                exit 1
-            fi
-            package_expected=$(awk -v name="$rel" '$2 == name { count++; value=$1 } END { if (count != 1) exit 1; print value }' "$PKG_DIR/TARGET-SHA256SUMS")
-            actual=$(sha256sum "$FAILED/backups/$rel" | awk '{print $1}')
-            if [ "$actual" != "$package_expected" ]; then
-                echo "Newly captured original failed rollback verification: $rel" >&2
-                exit 1
-            fi
-            dir=$(dirname "$rel")
-            mkdir -p "$STATE/backups/$dir"
-            cp "$FAILED/backups/$rel" "$STATE/backups/$rel"
-            chmod 600 "$STATE/backups/$rel"
-        fi
-    done
-    if [ -e "$STATE/backups/$PREUPDATE" ] || ! cp -R "$FAILED/backups/$PREUPDATE" "$STATE/backups/$PREUPDATE"; then
-        echo "Could not preserve the pre-update overlay snapshot. Preserve $STATE and $FAILED for recovery." >&2
-        exit 1
-    fi
-    write_backup_manifest "$STATE/backups" "$STATE/BACKUP-SHA256SUMS.rollback.$$"
-    if ! validate_backup_manifest "$STATE/BACKUP-SHA256SUMS.rollback.$$" ||
-       ! mv "$STATE/BACKUP-SHA256SUMS.rollback.$$" "$STATE/BACKUP-SHA256SUMS" ||
-       ! (cd "$STATE/backups" && sha256sum -c "$STATE/BACKUP-SHA256SUMS"); then
-        echo "Could not verify the restored backup manifest. Preserve $STATE and $FAILED for recovery." >&2
-        exit 1
-    fi
     if ! "$STATE/apply.sh" --lock-held || ! verify_active_state; then
         if ! "$STATE/unmount.sh" --lock-held || ! verify_no_mounts; then
             echo "Previous overlay activation failed and mounts remain uncertain. Preserve $STATE and $FAILED for recovery." >&2
@@ -429,11 +399,12 @@ if [ "$activation_failed" -ne 0 ]; then
         fi
         exit 1
     fi
-    if ! rm -rf "$FAILED"; then
-        echo "Previous overlay is active and verified, but failed-state cleanup is incomplete. Preserve backups and inspect $FAILED." >&2
+    if ! validate_backup_manifest "$FAILED/BACKUP-SHA256SUMS" ||
+       ! (cd "$FAILED/backups" && sha256sum -c "$FAILED/BACKUP-SHA256SUMS"); then
+        echo "Previous overlay is active and verified, but failed-update backups could not be verified. Preserve $STATE and $FAILED for recovery." >&2
         exit 1
     fi
-    echo "New overlay failed; the previous overlay was restored and verified. Original and pre-update backups remain synchronized; transferred bundle retained for recovery." >&2
+    echo "New overlay failed; the previous overlay was restored and verified. Failed-update originals and the pre-update overlay are retained at $FAILED; inspect and resolve this recovery path before another update." >&2
     exit 1
 fi
 if ! rm -rf "$PREVIOUS"; then

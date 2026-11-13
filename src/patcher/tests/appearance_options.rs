@@ -51,3 +51,15 @@ fn option_specs_are_authoritative_for_defaults_and_value_access() {
     }
     options.validate().unwrap();
 }
+#[test]
+fn no_signal_text_color_rejects_malformed_hex() {
+    let mut options = PatchOptions::default();
+    for invalid in ["red", "#12345", "#GG0000"] {
+        assert!(matches!(
+            options.set_option("no-signal-text-color", invalid),
+            Err(crate::patches::PatchOptionError::InvalidColor {
+                name: "no-signal-text-color"
+            })
+        ));
+    }
+}

@@ -326,6 +326,7 @@ mod tests {
         assert_eq!(ssh_config_path(&config), None);
         assert_eq!(config.patch_options.input_tile_text_color, "#FF0000");
         assert_eq!(config.patch_options.input_banner_text_color, "#FF0000");
+        assert_eq!(config.patch_options.no_signal_text_color, "#FF0000");
         assert_eq!(config.patch_options.input_banner_menu_color, "#FF0000");
         assert_eq!(
             config.patch_options.input_banner_menu_focus_fill_color,

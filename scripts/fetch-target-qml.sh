@@ -47,7 +47,9 @@ for file in \
   /usr/lib/qml/InputPicker/Controllers/AppInterfaces/Interfaces.qml \
   /usr/lib/qml/InputPicker/Controllers/ConnectionsInterfaces/Interfaces.qml \
   /usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/InputBanner.qml \
-  /usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/SimpleBanner.qml
+  /usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/SimpleBanner.qml \
+  /usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/BgViewLayer/Screensaver.qml \
+  /usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/BgViewLayer/ScreensaverMainText.qml
 do
   [ -f "$file" ] && [ ! -L "$file" ] || { echo "Missing/non-regular target file: $file" >&2; exit 1; }
   if awk -v target="$file" '\''$2 == target { found=1 } END { exit !found }'\'' /proc/mounts; then
@@ -63,7 +65,8 @@ mkdir -p "$STAGE/usr/lib/qml/QuickSettings/Containers" \
          "$STAGE/usr/lib/qml/InputPicker/Containers" \
          "$STAGE/usr/lib/qml/InputPicker/Controllers/AppInterfaces" \
          "$STAGE/usr/lib/qml/InputPicker/Controllers/ConnectionsInterfaces" \
-         "$STAGE/usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner"
+         "$STAGE/usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner" \
+         "$STAGE/usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/BgViewLayer"
 cleanup() {
     if [ -n "$STAGE" ] && [ -d "$STAGE" ]; then
         rm -rf "$STAGE"
@@ -91,6 +94,10 @@ scp "$TARGET:/usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceL
     "$STAGE/usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/InputBanner.qml"
 scp "$TARGET:/usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/SimpleBanner.qml" \
     "$STAGE/usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/SimpleBanner.qml"
+scp "$TARGET:/usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/BgViewLayer/Screensaver.qml" \
+    "$STAGE/usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/BgViewLayer/Screensaver.qml"
+scp "$TARGET:/usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/BgViewLayer/ScreensaverMainText.qml" \
+    "$STAGE/usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/BgViewLayer/ScreensaverMainText.qml"
 
 printf '%s\n' "User-reported firmware label: $VERSION" \
     "Source: read-only root SSH/SCP from $TARGET" \
@@ -110,6 +117,8 @@ printf '%s\n' "User-reported firmware label: $VERSION" \
         usr/lib/qml/InputPicker/Controllers/ConnectionsInterfaces/Interfaces.qml \
         usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/InputBanner.qml \
         usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/SimpleBanner.qml \
+        usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/BgViewLayer/Screensaver.qml \
+        usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/BgViewLayer/ScreensaverMainText.qml \
         > SOURCE-SHA256SUMS
 )
 mv "$STAGE" "$DEST"

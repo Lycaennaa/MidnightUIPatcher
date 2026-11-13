@@ -21,21 +21,12 @@ pub(super) const CURRENT_TARGETS: [&str; 2] = [
     "usr/lib/qml/QuickSettings/Component/BaseControlPanelButton.qml",
 ];
 
-pub(super) fn old_targets_for_added_target_migration() -> Vec<&'static str> {
+pub(super) fn old_targets_for_added_targets_migration() -> Vec<&'static str> {
     assert!(
-        !TARGETS.is_empty(),
-        "migration fixture needs a current target"
+        TARGETS.len() >= 2,
+        "migration fixture needs at least two newly added targets"
     );
-    if TARGETS.len() > 1 {
-        return TARGETS[..TARGETS.len() - 1].to_vec();
-    }
-
-    let previous_target = PREVIOUS_TARGETS
-        .iter()
-        .copied()
-        .find(|target| !TARGETS.contains(target))
-        .expect("migration fixture needs a target absent from the current set");
-    vec![previous_target]
+    TARGETS[..TARGETS.len() - 2].to_vec()
 }
 
 pub(super) struct Scenario {
@@ -197,6 +188,19 @@ pub(super) fn build_scenario(old_targets: &[&'static str], fail_new_mount: bool)
             format!("{}  {target}\n", sha256(original.as_bytes()))
         })
         .collect::<String>();
+    let legacy_unsupported_paths = TARGETS
+        .iter()
+        .filter(|target| target.starts_with("usr/palm/") && !old_targets.contains(target))
+        .map(|target| format!("$2 == \"{target}\""))
+        .collect::<Vec<_>>()
+        .join(" || ");
+    let legacy_manifest_rejection = if legacy_unsupported_paths.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "if awk '{legacy_unsupported_paths} {{ rejected=1 }} END {{ exit !rejected }}' \"$STATE/BACKUP-SHA256SUMS\"; then echo \"Legacy backup manifest rejects added app targets.\" >&2; exit 1; fi\n"
+        )
+    };
     write_file(&state.join("TARGET-SHA256SUMS"), old_manifest.as_bytes());
     write_file(&state.join("BACKUP-SHA256SUMS"), backup_manifest.as_bytes());
     write_file(&state.join("COMPATIBILITY"), b"previous compatibility\n");
@@ -211,10 +215,10 @@ pub(super) fn build_scenario(old_targets: &[&'static str], fail_new_mount: bool)
 
     let old_files = old_targets.join("\n");
     let old_apply = format!(
-        "#!/bin/sh\nset -eu\nSTATE=\"$TEST_WEBOSBREW/black-theme\"\nRUN_MARKER=\"$TEST_RUN/black-theme-overlay.active\"\nFILES='\n{old_files}\n'\nfor rel in $FILES; do mount --bind \"$STATE/overlay/$rel\" \"$TEST_QML_ROOT/$rel\"; done\n: > \"$RUN_MARKER\"\n"
+        "#!/bin/sh\nset -eu\nSTATE=\"$TEST_WEBOSBREW/black-theme\"\nRUN_MARKER=\"$TEST_RUN/black-theme-overlay.active\"\nFILES='\n{old_files}\n'\n{legacy_manifest_rejection}for rel in $FILES; do mount --bind \"$STATE/overlay/$rel\" \"$TEST_QML_ROOT/$rel\"; done\n: > \"$RUN_MARKER\"\n"
     );
     let old_unmount = format!(
-        "#!/bin/sh\nset -eu\nRUN_MARKER=\"$TEST_RUN/black-theme-overlay.active\"\nFILES='\n{old_files}\n'\n[ -f \"$RUN_MARKER\" ] || exit 0\nfor rel in $FILES; do umount \"$TEST_QML_ROOT/$rel\"; done\nrm -f \"$RUN_MARKER\"\n"
+        "#!/bin/sh\nset -eu\nSTATE=\"$TEST_WEBOSBREW/black-theme\"\nRUN_MARKER=\"$TEST_RUN/black-theme-overlay.active\"\nFILES='\n{old_files}\n'\n[ -f \"$RUN_MARKER\" ] || exit 0\n{legacy_manifest_rejection}for rel in $FILES; do umount \"$TEST_QML_ROOT/$rel\"; done\nrm -f \"$RUN_MARKER\"\n"
     );
     write_script(&state.join("apply.sh"), &old_apply);
     write_script(&state.join("unmount.sh"), &old_unmount);
@@ -324,16 +328,35 @@ pub(super) fn expected_mount_targets(scenario: &Scenario, targets: &[&str]) -> B
         .collect()
 }
 
+pub(super) fn failed_state_dir(scenario: &Scenario) -> PathBuf {
+    let mut recovery_states = fs::read_dir(scenario.root.join("webosbrew"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("black-theme.failed-overlay.")
+        })
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        recovery_states.len(),
+        1,
+        "expected one retained failed state"
+    );
+    recovery_states.pop().unwrap()
+}
 pub(super) fn verify_backup_manifest(scenario: &Scenario) {
+    let state = scenario.root.join("webosbrew/black-theme");
+    verify_backup_manifest_in(scenario, &state);
+}
+
+pub(super) fn verify_backup_manifest_in(scenario: &Scenario, state: &Path) {
     let output = Command::new(scenario.bin.join("sha256sum"))
         .arg("-c")
-        .arg(
-            scenario
-                .root
-                .join("webosbrew")
-                .join("black-theme/BACKUP-SHA256SUMS"),
-        )
-        .current_dir(scenario.root.join("webosbrew").join("black-theme/backups"))
+        .arg(state.join("BACKUP-SHA256SUMS"))
+        .current_dir(state.join("backups"))
         .env("PATH", format!("{}:/usr/bin:/bin", scenario.bin.display()))
         .output()
         .unwrap();
@@ -345,18 +368,27 @@ pub(super) fn verify_backup_manifest(scenario: &Scenario) {
 }
 
 pub(super) fn direct_backup_targets(scenario: &Scenario) -> BTreeSet<String> {
-    fs::read_to_string(
-        scenario
-            .root
-            .join("webosbrew/black-theme/BACKUP-SHA256SUMS"),
-    )
-    .unwrap()
-    .lines()
-    .filter_map(|line| {
-        let path = line.split_whitespace().nth(1)?;
-        path.starts_with("usr/lib/qml/").then(|| path.to_owned())
-    })
-    .collect()
+    direct_backup_targets_in(&scenario.root.join("webosbrew/black-theme"))
+}
+
+pub(super) fn direct_backup_targets_in(state: &Path) -> BTreeSet<String> {
+    fs::read_to_string(state.join("BACKUP-SHA256SUMS"))
+        .unwrap()
+        .lines()
+        .filter_map(|line| {
+            let path = line.split_whitespace().nth(1)?;
+            let is_original =
+                path.starts_with("usr/lib/qml/")
+                    || matches!(
+                        path,
+                        "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/InputBanner.qml"
+                            | "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/SimpleBanner.qml"
+                            | "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/BgViewLayer/Screensaver.qml"
+                            | "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/BgViewLayer/ScreensaverMainText.qml"
+                    );
+            is_original.then(|| path.to_owned())
+        })
+        .collect()
 }
 
 pub(super) fn expected_original_targets(scenario: &Scenario) -> Vec<&'static str> {
@@ -371,12 +403,17 @@ pub(super) fn expected_original_targets(scenario: &Scenario) -> Vec<&'static str
 }
 
 pub(super) fn assert_original_backups(scenario: &Scenario, targets: &[&str]) {
+    let state = scenario.root.join("webosbrew/black-theme");
+    assert_original_backups_in(&state, targets);
+}
+
+pub(super) fn assert_original_backups_in(state: &Path, targets: &[&str]) {
     let expected = targets
         .iter()
         .map(|target| (*target).to_owned())
         .collect::<BTreeSet<_>>();
-    assert_eq!(direct_backup_targets(scenario), expected);
-    let backups = scenario.root.join("webosbrew/black-theme/backups");
+    assert_eq!(direct_backup_targets_in(state), expected);
+    let backups = state.join("backups");
     for target in targets {
         assert_eq!(
             fs::read_to_string(backups.join(*target)).unwrap(),
@@ -469,7 +506,12 @@ pub(super) fn invalid_target_manifests(scenario: &Scenario) -> Vec<(&'static str
 }
 
 pub(super) fn assert_preupdate_snapshot(scenario: &Scenario) {
-    let backups = scenario.root.join("webosbrew/black-theme/backups");
+    let state = scenario.root.join("webosbrew/black-theme");
+    assert_preupdate_snapshot_in(scenario, &state);
+}
+
+pub(super) fn assert_preupdate_snapshot_in(scenario: &Scenario, state: &Path) {
+    let backups = state.join("backups");
     let snapshots = fs::read_dir(&backups)
         .unwrap()
         .filter_map(Result::ok)
@@ -483,12 +525,7 @@ pub(super) fn assert_preupdate_snapshot(scenario: &Scenario) {
         .collect::<Vec<_>>();
     assert_eq!(snapshots.len(), 1, "expected one pre-update snapshot");
     let snapshot = &snapshots[0];
-    let manifest = fs::read_to_string(
-        scenario
-            .root
-            .join("webosbrew/black-theme/BACKUP-SHA256SUMS"),
-    )
-    .unwrap();
+    let manifest = fs::read_to_string(state.join("BACKUP-SHA256SUMS")).unwrap();
     let snapshot_name = snapshot.file_name().unwrap().to_string_lossy();
     for target in &scenario.old_targets {
         let snapshot_file = snapshot.join("overlay").join(*target);
@@ -515,5 +552,5 @@ pub(super) fn assert_preupdate_snapshot(scenario: &Scenario) {
         let relative = format!("{snapshot_name}/{name}");
         assert!(manifest.lines().any(|line| line.ends_with(&relative)));
     }
-    verify_backup_manifest(scenario);
+    verify_backup_manifest_in(scenario, state);
 }

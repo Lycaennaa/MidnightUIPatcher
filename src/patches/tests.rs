@@ -46,4 +46,12 @@ fn tweaks_are_grouped_by_affected_area() {
             "input-banner-menu-color",
         ],
     );
+    assert_eq!(
+        ids_for(PatchArea::NoSignal),
+        vec![
+            "no-signal-animation",
+            "no-signal-instructions",
+            "no-signal-text-color",
+        ],
+    );
 }

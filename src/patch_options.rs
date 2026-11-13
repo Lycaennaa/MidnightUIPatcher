@@ -26,6 +26,7 @@ pub(crate) enum PatchOption {
     InputBannerMenuFocusFillColor,
     InputBannerMenuFocusBorderColor,
     InputBannerMenuFocusBorderWidth,
+    NoSignalTextColor,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -33,6 +34,7 @@ enum PatchOptionQmlFormat {
     Direct,
     CurrentInputColor,
     CurrentInputWidth,
+    NoSignalTextColor,
 }
 
 impl PatchOptionQmlFormat {
@@ -45,6 +47,9 @@ impl PatchOptionQmlFormat {
             Self::CurrentInputWidth => {
                 format!("entry.currentInput ? styler.getRelativeValue({value}) : 0")
             }
+            Self::NoSignalTextColor => format!(
+                "(text === stringSheet.screensaver.strings.noSignal.full || text === stringSheet.screensaver.strings.noSignal.header) ? {value} : \"#E6E6E6\""
+            ),
         }
     }
 }
@@ -61,7 +66,7 @@ pub struct PatchOptionSpec {
     qml_format: PatchOptionQmlFormat,
 }
 
-pub const PATCH_OPTION_SPECS: [PatchOptionSpec; 15] = [
+pub const PATCH_OPTION_SPECS: [PatchOptionSpec; 16] = [
     PatchOptionSpec {
         id: "main-panel-color",
         patch_id: "main-panel-color",
@@ -212,6 +217,16 @@ pub const PATCH_OPTION_SPECS: [PatchOptionSpec; 15] = [
         option: PatchOption::InputBannerMenuFocusBorderWidth,
         qml_format: PatchOptionQmlFormat::Direct,
     },
+    PatchOptionSpec {
+        id: "no-signal-text-color",
+        patch_id: "no-signal-text-color",
+        label: "No Signal text color",
+        help: "Color of the translated No Signal title; other screensaver titles remain unchanged.",
+        kind: PatchOptionKind::Color,
+        default: "#FF0000",
+        option: PatchOption::NoSignalTextColor,
+        qml_format: PatchOptionQmlFormat::NoSignalTextColor,
+    },
 ];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -232,6 +247,7 @@ pub struct PatchOptions {
     pub input_banner_menu_focus_fill_color: String,
     pub input_banner_menu_focus_border_color: String,
     pub input_banner_menu_focus_border_width: f64,
+    pub no_signal_text_color: String,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -355,6 +371,7 @@ impl Default for PatchOptions {
             input_banner_menu_focus_border_width: default_number(
                 PatchOption::InputBannerMenuFocusBorderWidth,
             ),
+            no_signal_text_color: default_color(PatchOption::NoSignalTextColor),
         }
     }
 }
@@ -422,6 +439,7 @@ impl PatchOptions {
             PatchOption::InputBannerMenuFocusBorderWidth => {
                 PatchOptionValue::Number(self.input_banner_menu_focus_border_width)
             }
+            PatchOption::NoSignalTextColor => PatchOptionValue::Color(&self.no_signal_text_color),
         }
     }
 
@@ -474,6 +492,9 @@ impl PatchOptions {
                 PatchOption::InputBannerMenuFocusBorderWidth,
                 ParsedPatchOptionValue::Number(value),
             ) => self.input_banner_menu_focus_border_width = value,
+            (PatchOption::NoSignalTextColor, ParsedPatchOptionValue::Color(value)) => {
+                self.no_signal_text_color = value
+            }
             _ => unreachable!("patch option kind must match its stored field"),
         }
     }

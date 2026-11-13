@@ -6,16 +6,17 @@ use std::fs;
 
 use midnight_ui_patcher::patches::TARGETS;
 use support::{
-    CURRENT_TARGETS, PREVIOUS_TARGETS, assert_original_backups, assert_overlay_targets,
-    assert_preupdate_snapshot, build_scenario, direct_backup_targets, expected_mount_targets,
-    expected_original_targets, invalid_target_manifests, mount_targets,
-    old_targets_for_added_target_migration, replace_package_target_manifest, run_update,
-    verify_backup_manifest,
+    CURRENT_TARGETS, PREVIOUS_TARGETS, assert_original_backups, assert_original_backups_in,
+    assert_overlay_targets, assert_preupdate_snapshot, assert_preupdate_snapshot_in,
+    build_scenario, direct_backup_targets, expected_mount_targets, expected_original_targets,
+    failed_state_dir, invalid_target_manifests, mount_targets,
+    old_targets_for_added_targets_migration, replace_package_target_manifest, run_update,
+    verify_backup_manifest, verify_backup_manifest_in,
 };
 
 #[test]
 fn old_target_sets_migrate_to_current_targets_and_rollback_on_failure() {
-    for old_targets in [&PREVIOUS_TARGETS[..], &CURRENT_TARGETS[..]] {
+    for old_targets in [&PREVIOUS_TARGETS[..], &CURRENT_TARGETS[..], &TARGETS[..]] {
         let success = build_scenario(old_targets, false);
         assert_eq!(
             mount_targets(&success),
@@ -79,25 +80,25 @@ fn old_target_sets_migrate_to_current_targets_and_rollback_on_failure() {
             expected_mount_targets(&failed, &failed.old_targets)
         );
         assert_overlay_targets(&failed, &failed.old_targets, "old-overlay");
-        assert_original_backups(&failed, &expected_original_targets(&failed));
-        assert_preupdate_snapshot(&failed);
-        assert!(
-            !fs::read_dir(failed.root.join("webosbrew"))
-                .unwrap()
-                .filter_map(Result::ok)
-                .any(|entry| entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("black-theme.failed-overlay."))
-        );
+        assert_original_backups(&failed, &failed.old_targets);
+        verify_backup_manifest(&failed);
+        let failed_recovery = failed_state_dir(&failed);
+        let expected_originals = expected_original_targets(&failed);
+        assert_original_backups_in(&failed_recovery, &expected_originals);
+        assert_preupdate_snapshot_in(&failed, &failed_recovery);
+        verify_backup_manifest_in(&failed, &failed_recovery);
     }
 }
 
 #[test]
-fn migration_captures_added_target_original_and_restores_it_on_failure() {
-    let old_targets = old_targets_for_added_target_migration();
-    let added_target = *TARGETS.last().expect("current target set is nonempty");
-    assert!(!old_targets.contains(&added_target));
+fn migration_captures_added_targets_and_restores_them_on_failure() {
+    let old_targets = old_targets_for_added_targets_migration();
+    let added_targets = &TARGETS[TARGETS.len() - 2..];
+    assert!(
+        added_targets
+            .iter()
+            .all(|target| !old_targets.contains(target))
+    );
     let scenario = build_scenario(&old_targets, false);
     assert_eq!(
         mount_targets(&scenario),
@@ -110,14 +111,16 @@ fn migration_captures_added_target_original_and_restores_it_on_failure() {
         .map(|target| (*target).to_owned())
         .collect::<BTreeSet<_>>();
     assert_eq!(direct_backup_targets(&scenario), initial_backup_targets);
-    assert!(
-        !mount_targets(&scenario).contains(&format!("{}/{added_target}", scenario.qml)),
-        "newly added target must begin unmounted"
-    );
-    assert_eq!(
-        fs::read_to_string(scenario.root.join("qml").join(added_target)).unwrap(),
-        format!("original:{added_target}\n")
-    );
+    for added_target in added_targets.iter().copied() {
+        assert!(
+            !mount_targets(&scenario).contains(&format!("{}/{added_target}", scenario.qml)),
+            "newly added target must begin unmounted"
+        );
+        assert_eq!(
+            fs::read_to_string(scenario.root.join("qml").join(added_target)).unwrap(),
+            format!("original:{added_target}\n")
+        );
+    }
 
     let output = run_update(&scenario);
     assert!(
@@ -156,13 +159,44 @@ fn migration_captures_added_target_original_and_restores_it_on_failure() {
         expected_mount_targets(&failed, &old_targets)
     );
     assert_overlay_targets(&failed, &old_targets, "old-overlay");
-    assert_original_backups(&failed, &expected_original_targets(&failed));
-    assert_preupdate_snapshot(&failed);
+    assert_original_backups(&failed, &old_targets);
+    verify_backup_manifest(&failed);
+    let failed_recovery = failed_state_dir(&failed);
+    let expected_originals = expected_original_targets(&failed);
+    assert_original_backups_in(&failed_recovery, &expected_originals);
+    assert_preupdate_snapshot_in(&failed, &failed_recovery);
+    verify_backup_manifest_in(&failed, &failed_recovery);
+
+    let retry = run_update(&failed);
+    assert!(
+        !retry.status.success(),
+        "update unexpectedly proceeded with unresolved recovery backups"
+    );
+    assert!(
+        String::from_utf8_lossy(&retry.stderr).contains("Unresolved update recovery path found")
+    );
+    assert_eq!(
+        fs::read_to_string(state.join("TARGET-SHA256SUMS")).unwrap(),
+        failed.old_manifest
+    );
+    assert_eq!(
+        fs::read_to_string(state.join("BACKUP-SHA256SUMS")).unwrap(),
+        failed.backup_manifest
+    );
+    assert_eq!(
+        mount_targets(&failed),
+        expected_mount_targets(&failed, &old_targets)
+    );
+    assert_original_backups(&failed, &old_targets);
+    assert_original_backups_in(&failed_recovery, &expected_originals);
+    assert_preupdate_snapshot_in(&failed, &failed_recovery);
+    verify_backup_manifest(&failed);
+    verify_backup_manifest_in(&failed, &failed_recovery);
 }
 
 #[test]
 fn malformed_duplicate_and_unsafe_package_target_manifests_are_rejected_unchanged() {
-    let old_targets = old_targets_for_added_target_migration();
+    let old_targets = old_targets_for_added_targets_migration();
     let scenario = build_scenario(&old_targets, false);
     let invalid_manifests = invalid_target_manifests(&scenario);
 
