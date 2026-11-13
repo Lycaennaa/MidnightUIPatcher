@@ -17,7 +17,7 @@ fn apply_patch(
 }
 
 #[test]
-fn no_signal_animation_patch_guards_motion_and_indicator_only_for_no_signal() {
+fn no_signal_gif_patch_hides_only_the_gif() {
     let source = r#"Item {
         id: screensaverRoot
         RandomMoveItem {
@@ -41,11 +41,41 @@ fn no_signal_animation_patch_guards_motion_and_indicator_only_for_no_signal() {
     .unwrap();
 
     assert!(output.contains(
-        "isMoving: currentKey !== \"noSignal\" && isDynamic && systemProperties.isAppActivated"
-    ));
-    assert!(output.contains(
         "visible: currentKey !== \"noSignal\" && element.isDynamic && (headerText.text || bodyText.text)"
     ));
+    assert!(output.contains("isMoving: isDynamic && systemProperties.isAppActivated"));
+    assert!(output.contains("isRepeatedMoving: !isPhotoRunning"));
+    assert!(output.contains("id: unrelated; visible: true"));
+}
+
+#[test]
+fn no_signal_movement_patch_stops_only_screen_movement() {
+    let source = r#"Item {
+        id: screensaverRoot
+        RandomMoveItem {
+            id: element
+            isMoving: isDynamic && systemProperties.isAppActivated
+            isRepeatedMoving: !isPhotoRunning
+        }
+        AnimatedImage {
+            id: animation
+            visible: element.isDynamic && (headerText.text || bodyText.text)
+        }
+        Text { id: unrelated; visible: true }
+    }"#;
+
+    let output = apply_patch(
+        "no-signal-movement",
+        TARGETS[10],
+        source,
+        &PatchOptions::default(),
+    )
+    .unwrap();
+
+    assert!(output.contains(
+        "isMoving: currentKey !== \"noSignal\" && isDynamic && systemProperties.isAppActivated"
+    ));
+    assert!(output.contains("visible: element.isDynamic && (headerText.text || bodyText.text)"));
     assert!(output.contains("isRepeatedMoving: !isPhotoRunning"));
     assert!(output.contains("id: unrelated; visible: true"));
 }

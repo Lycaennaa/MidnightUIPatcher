@@ -268,7 +268,7 @@ const INPUT_HOME_HUB_SITES: [PatchSite; 1] = [PatchSite {
     },
 }];
 
-pub const PATCHES: [PatchSpec; 24] = [
+pub const PATCHES: [PatchSpec; 25] = [
     PatchSpec {
         area: PatchArea::QuickSettings,
         rule: PatchRule::Scalar {
@@ -497,6 +497,7 @@ pub const PATCHES: [PatchSpec; 24] = [
     input_banner::DIVIDER,
     input_banner::MENU_STYLE,
     no_signal::ANIMATION,
+    no_signal::MOVEMENT,
     no_signal::INSTRUCTIONS,
     no_signal::TEXT_COLOR,
 ];

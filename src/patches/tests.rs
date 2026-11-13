@@ -50,6 +50,7 @@ fn tweaks_are_grouped_by_affected_area() {
         ids_for(PatchArea::NoSignal),
         vec![
             "no-signal-animation",
+            "no-signal-movement",
             "no-signal-instructions",
             "no-signal-text-color",
         ],

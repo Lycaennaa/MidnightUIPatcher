@@ -1,34 +1,38 @@
 use super::{
-    FunctionStatementTarget, PatchArea, PatchOption, PatchRule, PatchSite, PatchSpec, PatchValue,
-    TARGETS,
+    FunctionStatementTarget, PatchArea, PatchOption, PatchRule, PatchSpec, PatchValue, TARGETS,
 };
 
-const NO_SIGNAL_ANIMATION_SITES: [PatchSite; 2] = [
-    PatchSite {
-        target: TARGETS[10],
-        rule: PatchRule::Scalar {
-            root_id: "element",
-            scope: None,
-            property: "isMoving",
-            expected: "isDynamic && systemProperties.isAppActivated",
-            replacement: PatchValue::Literal(
-                "currentKey !== \"noSignal\" && isDynamic && systemProperties.isAppActivated",
-            ),
-        },
+pub(super) const ANIMATION: PatchSpec = PatchSpec {
+    area: PatchArea::NoSignal,
+    rule: PatchRule::Scalar {
+        root_id: "animation",
+        scope: None,
+        property: "visible",
+        expected: "element.isDynamic && (headerText.text || bodyText.text)",
+        replacement: PatchValue::Literal(
+            "currentKey !== \"noSignal\" && element.isDynamic && (headerText.text || bodyText.text)",
+        ),
     },
-    PatchSite {
-        target: TARGETS[10],
-        rule: PatchRule::Scalar {
-            root_id: "animation",
-            scope: None,
-            property: "visible",
-            expected: "element.isDynamic && (headerText.text || bodyText.text)",
-            replacement: PatchValue::Literal(
-                "currentKey !== \"noSignal\" && element.isDynamic && (headerText.text || bodyText.text)",
-            ),
-        },
+    id: "no-signal-animation",
+    label: "Hide the No Signal GIF",
+    target: TARGETS[10],
+};
+
+pub(super) const MOVEMENT: PatchSpec = PatchSpec {
+    area: PatchArea::NoSignal,
+    rule: PatchRule::Scalar {
+        root_id: "element",
+        scope: None,
+        property: "isMoving",
+        expected: "isDynamic && systemProperties.isAppActivated",
+        replacement: PatchValue::Literal(
+            "currentKey !== \"noSignal\" && isDynamic && systemProperties.isAppActivated",
+        ),
     },
-];
+    id: "no-signal-movement",
+    label: "Stop No Signal screen movement",
+    target: TARGETS[10],
+};
 
 const NO_SIGNAL_INSTRUCTION_STATEMENTS: [FunctionStatementTarget; 2] = [
     FunctionStatementTarget {
@@ -44,16 +48,6 @@ const NO_SIGNAL_INSTRUCTION_STATEMENTS: [FunctionStatementTarget; 2] = [
         expected_count: 1,
     },
 ];
-
-pub(super) const ANIMATION: PatchSpec = PatchSpec {
-    area: PatchArea::NoSignal,
-    rule: PatchRule::MultiSite {
-        sites: &NO_SIGNAL_ANIMATION_SITES,
-    },
-    id: "no-signal-animation",
-    label: "Stop No Signal screen movement and animation",
-    target: TARGETS[10],
-};
 
 pub(super) const INSTRUCTIONS: PatchSpec = PatchSpec {
     area: PatchArea::NoSignal,

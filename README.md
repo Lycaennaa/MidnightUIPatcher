@@ -66,7 +66,7 @@ The Input Picker shows a border only on the selected input, hides inactive exter
 
 The Input Banner is the source-information overlay toggled by OK on an external input. The theme removes its decorative background images and option divider, colors the source name and input label using `input-banner-text-color` (default `#FF0000`), and colors the vertical three-dot menu using `input-banner-menu-color` (default `#FF0000`). The focused menu tile fill defaults to transparent; its outline defaults to `#E6E6E6` at width 3, controlled by the `input-banner-menu-focus-fill-color`, `input-banner-menu-focus-border-color`, and `input-banner-menu-focus-border-width` options.
 
-The No Signal screensaver appears when an input loses signal, such as when an HDMI cable is disconnected. Its three independent patches stop No Signal movement and animation, hide connection instructions, and set the translated title color with `no-signal-text-color` (default `#FF0000`). A stationary No Signal display left on for a long time can increase OLED burn-in risk.
+The No Signal screensaver appears when an input loses signal, such as when an HDMI cable is disconnected. Its four independent patches hide the No Signal GIF, stop screen movement, hide connection instructions, and set the translated title color with `no-signal-text-color` (default `#FF0000`). A stationary No Signal display left on for a long time can increase OLED burn-in risk.
 
 
 ## Build and verify
