@@ -10,6 +10,7 @@
 - Preserve all captured originals and the pre-update overlay backup. Keep each `BACKUP-SHA256SUMS` synchronized and verify it from its matching backups directory before reapplying.
 - A display-service restart can interrupt the TV UI. Explain that risk and get current user approval before restarting `surface-manager-daemon.service`; earlier approval is not reusable. Do not restart WebAppMgr or broad Luna services speculatively.
 - File hashes and an active service do not prove HDMI appearance. Ask the owner to visually check Quick Settings, the Input Picker, the Input Banner, and the No Signal screen after a refresh.
+- When making new QML edits or performing firmware verification, do not tell the owner the edits or behavior are unverified; they know testing is in progress.
 
 ## Source of truth and packaging
 
