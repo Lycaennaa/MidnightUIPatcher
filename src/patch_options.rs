@@ -6,6 +6,7 @@ pub enum PatchOptionKind {
     Color,
     Opacity,
     RelativeWidth,
+    BorderWidth,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,6 +21,11 @@ pub(crate) enum PatchOption {
     InputTileTextColor,
     InputTileBorderColor,
     InputTileBorderWidth,
+    InputBannerTextColor,
+    InputBannerMenuColor,
+    InputBannerMenuFocusFillColor,
+    InputBannerMenuFocusBorderColor,
+    InputBannerMenuFocusBorderWidth,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -55,7 +61,7 @@ pub struct PatchOptionSpec {
     qml_format: PatchOptionQmlFormat,
 }
 
-pub const PATCH_OPTION_SPECS: [PatchOptionSpec; 10] = [
+pub const PATCH_OPTION_SPECS: [PatchOptionSpec; 15] = [
     PatchOptionSpec {
         id: "main-panel-color",
         patch_id: "main-panel-color",
@@ -156,6 +162,56 @@ pub const PATCH_OPTION_SPECS: [PatchOptionSpec; 10] = [
         option: PatchOption::InputTileBorderWidth,
         qml_format: PatchOptionQmlFormat::CurrentInputWidth,
     },
+    PatchOptionSpec {
+        id: "input-banner-text-color",
+        patch_id: "input-banner-text-color",
+        label: "Input source banner text color",
+        help: "Color used for the current source name and input label in the OK banner.",
+        kind: PatchOptionKind::Color,
+        default: "#FF0000",
+        option: PatchOption::InputBannerTextColor,
+        qml_format: PatchOptionQmlFormat::Direct,
+    },
+    PatchOptionSpec {
+        id: "input-banner-menu-color",
+        patch_id: "input-banner-menu-color",
+        label: "Input banner menu icon color",
+        help: "Color of the vertical three-dot menu in the OK banner.",
+        kind: PatchOptionKind::Color,
+        default: "#FF0000",
+        option: PatchOption::InputBannerMenuColor,
+        qml_format: PatchOptionQmlFormat::Direct,
+    },
+    PatchOptionSpec {
+        id: "input-banner-menu-focus-fill-color",
+        patch_id: "input-banner-menu-color",
+        label: "Menu focused tile fill",
+        help: "Background fill while the three-dot menu is focused; defaults to transparent.",
+        kind: PatchOptionKind::Color,
+        default: "#00000000",
+        option: PatchOption::InputBannerMenuFocusFillColor,
+        qml_format: PatchOptionQmlFormat::Direct,
+    },
+    PatchOptionSpec {
+        id: "input-banner-menu-focus-border-color",
+        patch_id: "input-banner-menu-color",
+        label: "Menu focus border color",
+        help: "Outline color while the three-dot menu is focused.",
+        kind: PatchOptionKind::Color,
+        default: "#E6E6E6",
+        option: PatchOption::InputBannerMenuFocusBorderColor,
+        qml_format: PatchOptionQmlFormat::Direct,
+    },
+    PatchOptionSpec {
+        id: "input-banner-menu-focus-border-width",
+        patch_id: "input-banner-menu-color",
+        label: "Menu focus border width",
+        help: "Outline width in QML units, from 0 to 10.",
+        kind: PatchOptionKind::BorderWidth,
+        default: "3",
+        option: PatchOption::InputBannerMenuFocusBorderWidth,
+        qml_format: PatchOptionQmlFormat::Direct,
+    },
 ];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -171,6 +227,11 @@ pub struct PatchOptions {
     pub input_tile_text_color: String,
     pub input_tile_border_color: String,
     pub input_tile_border_width: f64,
+    pub input_banner_text_color: String,
+    pub input_banner_menu_color: String,
+    pub input_banner_menu_focus_fill_color: String,
+    pub input_banner_menu_focus_border_color: String,
+    pub input_banner_menu_focus_border_width: f64,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -202,6 +263,7 @@ impl PatchOptionKind {
         match self {
             Self::Opacity => (0.0, 1.0, "0 to 1"),
             Self::RelativeWidth => (0.0, 100.0, "0 to 100"),
+            Self::BorderWidth => (0.0, 10.0, "0 to 10"),
             Self::Color => unreachable!("color options do not have numeric bounds"),
         }
     }
@@ -213,7 +275,7 @@ impl PatchOptionKind {
     ) -> Result<ParsedPatchOptionValue, PatchOptionError> {
         match self {
             Self::Color => Ok(ParsedPatchOptionValue::Color(parse_color(name, value)?)),
-            Self::Opacity | Self::RelativeWidth => {
+            Self::Opacity | Self::RelativeWidth | Self::BorderWidth => {
                 let (min, max, range) = self.numeric_range();
                 Ok(ParsedPatchOptionValue::Number(parse_number(
                     name, value, min, max, range,
@@ -235,7 +297,10 @@ impl PatchOptionKind {
                     Err(PatchOptionError::InvalidColor { name })
                 }
             }
-            (Self::Opacity | Self::RelativeWidth, PatchOptionValue::Number(value)) => {
+            (
+                Self::Opacity | Self::RelativeWidth | Self::BorderWidth,
+                PatchOptionValue::Number(value),
+            ) => {
                 let (min, max, range) = self.numeric_range();
                 validate_number(name, value, min, max, range)
             }
@@ -246,9 +311,10 @@ impl PatchOptionKind {
     fn display(self, value: PatchOptionValue<'_>) -> String {
         match (self, value) {
             (Self::Color, PatchOptionValue::Color(value)) => value.to_owned(),
-            (Self::Opacity | Self::RelativeWidth, PatchOptionValue::Number(value)) => {
-                qml_number(value)
-            }
+            (
+                Self::Opacity | Self::RelativeWidth | Self::BorderWidth,
+                PatchOptionValue::Number(value),
+            ) => qml_number(value),
             _ => unreachable!("patch option kind must match its stored value"),
         }
     }
@@ -256,9 +322,10 @@ impl PatchOptionKind {
     fn qml_value(self, value: PatchOptionValue<'_>) -> String {
         match (self, value) {
             (Self::Color, PatchOptionValue::Color(value)) => qml_color(value),
-            (Self::Opacity | Self::RelativeWidth, PatchOptionValue::Number(value)) => {
-                qml_number(value)
-            }
+            (
+                Self::Opacity | Self::RelativeWidth | Self::BorderWidth,
+                PatchOptionValue::Number(value),
+            ) => qml_number(value),
             _ => unreachable!("patch option kind must match its stored value"),
         }
     }
@@ -277,6 +344,17 @@ impl Default for PatchOptions {
             input_tile_text_color: default_color(PatchOption::InputTileTextColor),
             input_tile_border_color: default_color(PatchOption::InputTileBorderColor),
             input_tile_border_width: default_number(PatchOption::InputTileBorderWidth),
+            input_banner_text_color: default_color(PatchOption::InputBannerTextColor),
+            input_banner_menu_color: default_color(PatchOption::InputBannerMenuColor),
+            input_banner_menu_focus_fill_color: default_color(
+                PatchOption::InputBannerMenuFocusFillColor,
+            ),
+            input_banner_menu_focus_border_color: default_color(
+                PatchOption::InputBannerMenuFocusBorderColor,
+            ),
+            input_banner_menu_focus_border_width: default_number(
+                PatchOption::InputBannerMenuFocusBorderWidth,
+            ),
         }
     }
 }
@@ -329,6 +407,21 @@ impl PatchOptions {
             PatchOption::InputTileBorderWidth => {
                 PatchOptionValue::Number(self.input_tile_border_width)
             }
+            PatchOption::InputBannerTextColor => {
+                PatchOptionValue::Color(&self.input_banner_text_color)
+            }
+            PatchOption::InputBannerMenuColor => {
+                PatchOptionValue::Color(&self.input_banner_menu_color)
+            }
+            PatchOption::InputBannerMenuFocusFillColor => {
+                PatchOptionValue::Color(&self.input_banner_menu_focus_fill_color)
+            }
+            PatchOption::InputBannerMenuFocusBorderColor => {
+                PatchOptionValue::Color(&self.input_banner_menu_focus_border_color)
+            }
+            PatchOption::InputBannerMenuFocusBorderWidth => {
+                PatchOptionValue::Number(self.input_banner_menu_focus_border_width)
+            }
         }
     }
 
@@ -364,6 +457,23 @@ impl PatchOptions {
             (PatchOption::InputTileBorderWidth, ParsedPatchOptionValue::Number(value)) => {
                 self.input_tile_border_width = value
             }
+            (PatchOption::InputBannerTextColor, ParsedPatchOptionValue::Color(value)) => {
+                self.input_banner_text_color = value
+            }
+            (PatchOption::InputBannerMenuColor, ParsedPatchOptionValue::Color(value)) => {
+                self.input_banner_menu_color = value
+            }
+            (PatchOption::InputBannerMenuFocusFillColor, ParsedPatchOptionValue::Color(value)) => {
+                self.input_banner_menu_focus_fill_color = value
+            }
+            (
+                PatchOption::InputBannerMenuFocusBorderColor,
+                ParsedPatchOptionValue::Color(value),
+            ) => self.input_banner_menu_focus_border_color = value,
+            (
+                PatchOption::InputBannerMenuFocusBorderWidth,
+                ParsedPatchOptionValue::Number(value),
+            ) => self.input_banner_menu_focus_border_width = value,
             _ => unreachable!("patch option kind must match its stored field"),
         }
     }

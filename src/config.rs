@@ -325,6 +325,20 @@ mod tests {
         assert!(config.ssh_config_file.is_empty());
         assert_eq!(ssh_config_path(&config), None);
         assert_eq!(config.patch_options.input_tile_text_color, "#FF0000");
+        assert_eq!(config.patch_options.input_banner_text_color, "#FF0000");
+        assert_eq!(config.patch_options.input_banner_menu_color, "#FF0000");
+        assert_eq!(
+            config.patch_options.input_banner_menu_focus_fill_color,
+            "#00000000"
+        );
+        assert_eq!(
+            config.patch_options.input_banner_menu_focus_border_color,
+            "#E6E6E6"
+        );
+        assert_eq!(
+            config.patch_options.input_banner_menu_focus_border_width,
+            3.0
+        );
     }
 
     #[test]

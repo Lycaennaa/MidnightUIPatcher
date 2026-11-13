@@ -192,6 +192,7 @@ impl AppearanceFields {
                     PatchOptionKind::Color => "#RRGGBB or #AARRGGBB",
                     PatchOptionKind::Opacity => "0 to 1",
                     PatchOptionKind::RelativeWidth => "0 to 100",
+                    PatchOptionKind::BorderWidth => "0 to 10",
                 };
                 (
                     option.id,

@@ -2,8 +2,9 @@ pub(crate) use crate::patch_options::PatchOption;
 pub use crate::patch_options::{
     PATCH_OPTION_SPECS, PatchOptionError, PatchOptionKind, PatchOptionSpec, PatchOptions,
 };
+mod input_banner;
 
-pub const TARGETS: [&str; 8] = [
+pub const TARGETS: [&str; 10] = [
     "usr/lib/qml/QuickSettings/Containers/QuickSettingsMainView.qml",
     "usr/lib/qml/QuickSettings/Component/BaseControlPanelButton.qml",
     "usr/lib/qml/InputPicker/Containers/RootView.qml",
@@ -12,6 +13,8 @@ pub const TARGETS: [&str; 8] = [
     "usr/lib/qml/InputPicker/Containers/InputPickerMainView.qml",
     "usr/lib/qml/InputPicker/Controllers/AppInterfaces/Interfaces.qml",
     "usr/lib/qml/InputPicker/Controllers/ConnectionsInterfaces/Interfaces.qml",
+    "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/InputBanner.qml",
+    "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/SimpleBanner.qml",
 ];
 
 #[derive(Clone, Copy, Debug)]
@@ -69,13 +72,17 @@ pub(crate) enum PatchRule {
         replacement: &'static str,
         expected_count: usize,
     },
-    HandlerCondition {
+    Import {
+        module: &'static str,
+        version: &'static str,
+    },
+    AppendMembers {
         root_id: &'static str,
-        scope: ChildObjectScope,
-        handler: &'static str,
+        anchor_property: &'static str,
         expected: &'static str,
-        replacement: &'static str,
-        expected_count: usize,
+        child_types: &'static [&'static str],
+        member_template: &'static str,
+        replacements: &'static [PatchValue],
     },
     MultiSite {
         sites: &'static [PatchSite],
@@ -92,15 +99,17 @@ pub(crate) struct PatchSite {
 pub(crate) enum PatchArea {
     QuickSettings,
     InputPicker,
+    InputBanner,
 }
 
 impl PatchArea {
-    pub(crate) const ALL: [Self; 2] = [Self::QuickSettings, Self::InputPicker];
+    pub(crate) const ALL: [Self; 3] = [Self::QuickSettings, Self::InputPicker, Self::InputBanner];
 
     pub(crate) const fn id(self) -> &'static str {
         match self {
             Self::QuickSettings => "quick-settings",
             Self::InputPicker => "input-picker",
+            Self::InputBanner => "input-banner",
         }
     }
 
@@ -108,6 +117,7 @@ impl PatchArea {
         match self {
             Self::QuickSettings => "Quick Settings",
             Self::InputPicker => "Input Picker",
+            Self::InputBanner => "Input Banner",
         }
     }
 }
@@ -226,20 +236,12 @@ const INPUT_TILE_BORDER_EDITS: [ScalarTarget; 2] = [
         replacement: PatchValue::Option(PatchOption::InputTileBorderWidth),
     },
 ];
-const INPUT_HOME_HUB_STATEMENTS: [FunctionStatementTarget; 2] = [
-    FunctionStatementTarget {
-        function: "createInputPickerModel",
-        expected: "createTitle();",
-        replacement: "",
-        expected_count: 1,
-    },
-    FunctionStatementTarget {
-        function: "updateInputPickerModel",
-        expected: "var startIdx = 1;",
-        replacement: "var startIdx = 0;",
-        expected_count: 1,
-    },
-];
+const INPUT_HOME_HUB_STATEMENTS: [FunctionStatementTarget; 1] = [FunctionStatementTarget {
+    function: "createInputPickerModel",
+    expected: "createTitle();",
+    replacement: "",
+    expected_count: 1,
+}];
 
 const INPUT_LIVE_TV_STATEMENTS: [FunctionStatementTarget; 1] = [FunctionStatementTarget {
     function: "getInputData",
@@ -247,32 +249,15 @@ const INPUT_LIVE_TV_STATEMENTS: [FunctionStatementTarget; 1] = [FunctionStatemen
     replacement: "",
     expected_count: 2,
 }];
-const INPUT_HOME_HUB_SITES: [PatchSite; 2] = [
-    PatchSite {
-        target: TARGETS[6],
-        rule: PatchRule::FunctionStatements {
-            root_id: "root",
-            targets: &INPUT_HOME_HUB_STATEMENTS,
-        },
+const INPUT_HOME_HUB_SITES: [PatchSite; 1] = [PatchSite {
+    target: TARGETS[6],
+    rule: PatchRule::FunctionStatements {
+        root_id: "root",
+        targets: &INPUT_HOME_HUB_STATEMENTS,
     },
-    PatchSite {
-        target: TARGETS[5],
-        rule: PatchRule::HandlerCondition {
-            root_id: "root",
-            scope: ChildObjectScope {
-                class: "Connections",
-                property: "target",
-                expected: "interfaces.application",
-            },
-            handler: "onShowView",
-            expected: "systemProperties.audioGuidanceOn",
-            replacement: "systemProperties.audioGuidanceOn && interfaces.application.inputPickerModel.count > 0",
-            expected_count: 1,
-        },
-    },
-];
+}];
 
-pub const PATCHES: [PatchSpec; 17] = [
+pub const PATCHES: [PatchSpec; 21] = [
     PatchSpec {
         area: PatchArea::QuickSettings,
         rule: PatchRule::Scalar {
@@ -496,48 +481,11 @@ pub const PATCHES: [PatchSpec; 17] = [
         label: "Show a border only on the selected input",
         target: TARGETS[4],
     },
+    input_banner::BACKGROUND,
+    input_banner::TEXT_COLOR,
+    input_banner::DIVIDER,
+    input_banner::MENU_STYLE,
 ];
 
 #[cfg(test)]
-mod tests {
-    use super::{PATCHES, PatchArea};
-
-    fn ids_for(area: PatchArea) -> Vec<&'static str> {
-        PATCHES
-            .iter()
-            .filter(|patch| patch.area == area)
-            .map(|patch| patch.id)
-            .collect()
-    }
-
-    #[test]
-    fn tweaks_are_grouped_by_affected_area() {
-        assert_eq!(
-            ids_for(PatchArea::QuickSettings),
-            vec![
-                "main-panel-color",
-                "main-panel-opacity",
-                "main-panel-visibility",
-                "menu-popup-color",
-                "button-default-color",
-                "button-idle-fill",
-            ],
-        );
-        assert_eq!(
-            ids_for(PatchArea::InputPicker),
-            vec![
-                "input-screen-backdrop",
-                "input-tile-shadow",
-                "input-home-hub",
-                "input-live-tv",
-                "input-active-signal",
-                "input-category-text",
-                "input-universal-control",
-                "input-tile-background",
-                "input-tile-icons",
-                "input-tile-red-text",
-                "input-tile-border",
-            ],
-        );
-    }
-}
+mod tests;

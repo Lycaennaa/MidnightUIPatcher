@@ -555,6 +555,7 @@ fn option_kind_name(kind: midnight_ui_patcher::patches::PatchOptionKind) -> &'st
         midnight_ui_patcher::patches::PatchOptionKind::Color => "color",
         midnight_ui_patcher::patches::PatchOptionKind::Opacity => "opacity",
         midnight_ui_patcher::patches::PatchOptionKind::RelativeWidth => "relative-width",
+        midnight_ui_patcher::patches::PatchOptionKind::BorderWidth => "border-width",
     }
 }
 

@@ -3,6 +3,17 @@ use crate::patches::{
     ChildObjectScope, FunctionStatementTarget, PATCH_OPTION_SPECS, PatchArea, PatchOption,
     PatchValue, ScalarTarget,
 };
+mod appearance_options;
+mod input_banner;
+fn apply_edits(source: &str, mut edits: Vec<Edit>) -> String {
+    edits.sort_by_key(|edit| std::cmp::Reverse(edit.start));
+    let mut output = source.to_owned();
+    for edit in edits {
+        output.replace_range(edit.start..edit.end, &edit.replacement);
+    }
+    output
+}
+
 #[test]
 fn scalar_rule_targets_unique_child_object_by_property() {
     const RULE: PatchRule = PatchRule::Scalar {
@@ -122,51 +133,6 @@ fn dynamic_opacity_and_selected_border_options_reach_qml_safely() {
         output,
         r##"Rectangle { id: fixtureRoot; opacity: 0.75; border.color: entry.currentInput ? "#80A1B2C3" : "transparent"; border.width: entry.currentInput ? styler.getRelativeValue(2.5) : 0 }"##
     );
-}
-
-#[test]
-fn appearance_numeric_options_reject_values_outside_their_ranges() {
-    let mut options = PatchOptions::default();
-    options.set_option("main-panel-opacity", "0").unwrap();
-    options.set_option("input-tile-icon-opacity", "1").unwrap();
-    options
-        .set_option("input-tile-border-width", "100")
-        .unwrap();
-    options.validate().unwrap();
-
-    for (id, value, name) in [
-        ("main-panel-opacity", "1.01", "main-panel-opacity"),
-        ("input-tile-icon-opacity", "NaN", "input-tile-icon-opacity"),
-        ("input-tile-border-width", "-0.1", "input-tile-border-width"),
-        (
-            "input-tile-border-width",
-            "100.1",
-            "input-tile-border-width",
-        ),
-    ] {
-        assert!(matches!(
-            options.set_option(id, value),
-            Err(crate::patches::PatchOptionError::InvalidNumber {
-                name: actual,
-                ..
-            }) if actual == name
-        ));
-    }
-}
-
-#[test]
-fn option_specs_are_authoritative_for_defaults_and_value_access() {
-    let mut options = PatchOptions::default();
-    for spec in &PATCH_OPTION_SPECS {
-        assert_eq!(
-            options.value(spec.id).as_deref(),
-            Some(spec.default),
-            "default for `{}` must come from its option specification",
-            spec.id
-        );
-        options.set_option(spec.id, spec.default).unwrap();
-    }
-    options.validate().unwrap();
 }
 
 #[test]
@@ -307,7 +273,7 @@ fn if_condition_rule_is_scoped_and_requires_exact_count() {
     ));
 }
 #[test]
-fn home_hub_patch_reindexes_input_updates_and_guards_empty_view() {
+fn home_hub_patch_removes_title_without_changing_picker_behavior() {
     let patch = PATCHES
         .iter()
         .find(|patch| patch.id == "input-home-hub")
@@ -357,19 +323,12 @@ fn home_hub_patch_reindexes_input_updates_and_guards_empty_view() {
     for edit in app_edits {
         app_output.replace_range(edit.start..edit.end, &edit.replacement);
     }
-    let mut view_edits = edits.remove(TARGETS[5]).unwrap();
-    view_edits.sort_by_key(|edit| std::cmp::Reverse(edit.start));
-    let mut view_output = main_view.to_owned();
-    for edit in view_edits {
-        view_output.replace_range(edit.start..edit.end, &edit.replacement);
-    }
 
     assert!(!app_output.contains("createTitle();"));
-    assert!(app_output.contains("var startIdx = 0;"));
-    assert!(view_output.contains(
-        "if (systemProperties.audioGuidanceOn && interfaces.application.inputPickerModel.count > 0)"
-    ));
-    assert!(view_output.contains("uiController.goToState(\"opened\");"));
+    assert!(app_output.contains("var startIdx = 1;"));
+    assert!(!edits.contains_key(TARGETS[5]));
+    assert!(main_view.contains("if (systemProperties.audioGuidanceOn) {"));
+    assert!(!main_view.contains("inputPickerModel.count > 0"));
 }
 
 #[test]

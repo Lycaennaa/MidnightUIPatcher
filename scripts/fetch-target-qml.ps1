@@ -37,7 +37,9 @@ $relativePaths = @(
     'usr/lib/qml/InputPicker/Containers/InputPickerListItemTile.qml',
     'usr/lib/qml/InputPicker/Containers/InputPickerMainView.qml',
     'usr/lib/qml/InputPicker/Controllers/AppInterfaces/Interfaces.qml',
-    'usr/lib/qml/InputPicker/Controllers/ConnectionsInterfaces/Interfaces.qml'
+    'usr/lib/qml/InputPicker/Controllers/ConnectionsInterfaces/Interfaces.qml',
+    'usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/InputBanner.qml',
+    'usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/SimpleBanner.qml'
 )
 $remoteCheck = @'
 set -eu
@@ -50,7 +52,9 @@ for file in \
   /usr/lib/qml/InputPicker/Containers/InputPickerListItemTile.qml \
   /usr/lib/qml/InputPicker/Containers/InputPickerMainView.qml \
   /usr/lib/qml/InputPicker/Controllers/AppInterfaces/Interfaces.qml \
-  /usr/lib/qml/InputPicker/Controllers/ConnectionsInterfaces/Interfaces.qml
+  /usr/lib/qml/InputPicker/Controllers/ConnectionsInterfaces/Interfaces.qml \
+  /usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/InputBanner.qml \
+  /usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/SimpleBanner.qml
 do
   [ -f "$file" ] && [ ! -L "$file" ] || { echo "Missing/non-regular target file: $file" >&2; exit 1; }
   if awk -v target="$file" '$2 == target { found=1 } END { exit !found }' /proc/mounts; then

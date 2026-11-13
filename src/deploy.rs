@@ -1156,7 +1156,7 @@ mod tests {
         assert!(!report.contains("input-tile-text-color"));
     }
 
-    fn manifest_validator_script(source: &str, minimum_depth: u8) -> String {
+    fn shared_manifest_functions(source: &str) -> &str {
         let start_marker = "# BEGIN shared manifest functions";
         let end_marker = "# END shared manifest functions";
         let start = source
@@ -1166,12 +1166,42 @@ mod tests {
             .find(end_marker)
             .map(|offset| start + offset + end_marker.len())
             .expect("shared manifest functions must have an end marker");
+        &source[start..end]
+    }
+
+    fn manifest_validator_script(source: &str, minimum_depth: u8) -> String {
         let invocation = if minimum_depth == 4 {
             "validate_backup_manifest \"$1\"".to_owned()
         } else {
             format!("validate_backup_manifest \"$1\" {minimum_depth}")
         };
-        format!("{}\n{invocation}\n", &source[start..end])
+        format!("{}\n{invocation}\n", shared_manifest_functions(source))
+    }
+
+    fn qml_path_validator_script(source: &str) -> String {
+        format!(
+            "{}\nvalid_qml_path \"$1\"\n",
+            shared_manifest_functions(source)
+        )
+    }
+
+    fn backup_original_paths_script(source: &str) -> String {
+        format!(
+            "{}\nbackup_original_paths \"$1\"\n",
+            shared_manifest_functions(source)
+        )
+    }
+
+    fn qml_path_is_valid(script: &str, target: &str) -> bool {
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .arg("valid_qml_path")
+            .arg(target)
+            .output()
+            .unwrap()
+            .status
+            .success()
     }
 
     fn assert_backup_manifest_validator(source: &str, minimum_depth: u8, target: &str) {
@@ -1255,6 +1285,88 @@ mod tests {
             5,
             "usr/lib/qml/QuickSettings/Legacy.qml",
         );
+    }
+
+    #[test]
+    fn remote_manifest_policy_allows_only_registered_input_banner_targets() {
+        let script = qml_path_validator_script(PREFLIGHT_SCRIPT);
+        for target in [TARGETS[0], TARGETS[8], TARGETS[9]] {
+            assert!(
+                qml_path_is_valid(&script, target),
+                "registered target rejected: {target}"
+            );
+        }
+        for target in [
+            TARGETS[8].replace("InputBanner.qml", "Unexpected.qml"),
+            TARGETS[8].replace("com.webos.app.inputcommon", "com.webos.app.tnativehome"),
+            TARGETS[8].replace(
+                "InputBanner/InputBanner.qml",
+                "InputBanner/../InputBanner.qml",
+            ),
+        ] {
+            assert!(
+                !qml_path_is_valid(&script, &target),
+                "unregistered target accepted: {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_shared_backup_manifest_validator_accepts_input_banner_originals() {
+        for target in [TARGETS[8], TARGETS[9]] {
+            assert_backup_manifest_validator(PREFLIGHT_SCRIPT, 5, target);
+        }
+    }
+
+    #[test]
+    fn remote_backup_original_paths_includes_input_banner_targets_only_as_originals() {
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::current_dir()
+            .unwrap()
+            .join(".build")
+            .join(format!(
+                "backup-original-paths-{}-{nonce}",
+                std::process::id()
+            ));
+        std::fs::create_dir_all(&root).unwrap();
+        let _cleanup = Cleanup(root.clone());
+        let manifest = root.join("BACKUP-SHA256SUMS");
+        let hash = "0".repeat(64);
+        std::fs::write(
+            &manifest,
+            format!(
+                "{hash}  {}\n{hash}  {}\n{hash}  {}\n{hash}  pre-update-20261111-1234/overlay/{}\n",
+                TARGETS[0], TARGETS[8], TARGETS[9], TARGETS[8]
+            ),
+        )
+        .unwrap();
+
+        let output = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(backup_original_paths_script(PREFLIGHT_SCRIPT))
+            .arg("backup_original_paths")
+            .arg(&manifest)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let paths = String::from_utf8_lossy(&output.stdout);
+        for target in [TARGETS[0], TARGETS[8], TARGETS[9]] {
+            assert!(
+                paths.lines().any(|path| path == target),
+                "original target missing: {target}"
+            );
+        }
+        assert!(!paths.contains("pre-update-20261111-1234"));
     }
 
     #[test]

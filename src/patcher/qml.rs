@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 
 use super::{PatchError, unsupported};
+mod insertion;
 mod lexer;
 
 use self::lexer::{Token, lex_fragment};
@@ -190,26 +191,6 @@ impl<'a> QmlDoc<'a> {
             _ => Err(unsupported(file, &format!("function {name} is ambiguous"))),
         }
     }
-    pub(super) fn handler_body(
-        &self,
-        scope: usize,
-        handler: &str,
-        file: &str,
-    ) -> Result<(usize, usize), PatchError> {
-        let (_, body_open) = self
-            .direct_member(scope, handler)
-            .map_err(|error| refile(error, file))?;
-        if body_open >= self.tokens.len() || !self.token_eq(body_open, "{") {
-            return Err(unsupported(
-                file,
-                &format!("signal handler {handler} has no body"),
-            ));
-        }
-        let Some(body_close) = self.matching[body_open] else {
-            return Err(unsupported(file, "signal handler body is unbalanced"));
-        };
-        Ok((body_open, body_close))
-    }
 
     pub(super) fn statement_spans(
         &self,
@@ -355,6 +336,14 @@ impl<'a> QmlDoc<'a> {
         let first = &self.tokens[range.start];
         let last = &self.tokens[range.end - 1];
         Ok(first.start..last.end)
+    }
+
+    pub(super) fn line_ending(&self) -> &'static str {
+        if self.source.contains("\r\n") {
+            "\r\n"
+        } else {
+            "\n"
+        }
     }
 
     pub(super) fn expression_literal_spans(

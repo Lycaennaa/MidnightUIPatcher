@@ -3,6 +3,10 @@
 valid_qml_path() {
     [ "$#" -eq 1 ] || return 1
     case "$1" in
+        usr/lib/qml/*|usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/InputBanner.qml|usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/SimpleBanner.qml) ;;
+        *) return 1 ;;
+    esac
+    case "$1" in
         *[!A-Za-z0-9._/-]*) return 1 ;;
     esac
     printf '%064d  %s\n' 0 "$1" | validate_manifest target 5
@@ -18,7 +22,7 @@ validate_backup_manifest() {
     validate_manifest backup "${2:-4}" "$1"
 }
 backup_original_paths() {
-    awk '$2 ~ /^usr\/lib\/qml\// { print $2 }' "$1"
+    awk '$2 ~ /^usr\/lib\/qml\// || $2 == "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/InputBanner.qml" || $2 == "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/SimpleBanner.qml" { print $2 }' "$1"
 }
 
 validate_manifest() (
@@ -36,9 +40,17 @@ validate_manifest() (
     esac
     awk -v mode="$manifest_kind" -v min_depth="$minimum_depth" '
     function valid_qml_path(path, min_depth, parts, count, i) {
-        if (path !~ /^usr\/lib\/qml\// || path ~ /[^A-Za-z0-9._\/-]/) return 0
+        if (path !~ /^usr\/lib\/qml\// &&
+            path != "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/InputBanner.qml" &&
+            path != "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/SimpleBanner.qml") return 0
+        if (path ~ /[^A-Za-z0-9._\/-]/) return 0
         count = split(path, parts, "/")
-        if (count < min_depth || parts[1] != "usr" || parts[2] != "lib" || parts[3] != "qml") return 0
+        if (count < min_depth) return 0
+        if (path ~ /^usr\/lib\/qml\//) {
+            if (parts[1] != "usr" || parts[2] != "lib" || parts[3] != "qml") return 0
+        } else if (parts[1] != "usr" || parts[2] != "palm" ||
+                   parts[3] != "applications" || parts[4] != "com.webos.app.inputcommon" ||
+                   parts[5] != "qml") return 0
         for (i = 1; i <= count; i++) {
             if (parts[i] == "" || parts[i] == "." || parts[i] == "..") return 0
         }
@@ -73,7 +85,9 @@ validate_manifest() (
             next
         }
         entries++
-        if (mode == "backup" && $2 ~ /^usr\/lib\/qml\//) originals++
+        if (mode == "backup" && ($2 ~ /^usr\/lib\/qml\// ||
+            $2 == "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/InputBanner.qml" ||
+            $2 == "usr/palm/applications/com.webos.app.inputcommon/qml/UserInterfaceLayer/Containers/MainViewLayer/InputBanner/SimpleBanner.qml")) originals++
     }
     END {
         if (invalid || entries == 0 || (mode == "backup" && originals == 0)) exit 1

@@ -185,6 +185,35 @@ fn condition_edits(
         .collect())
 }
 
+fn render_member_template(
+    template: &str,
+    replacements: &[crate::patches::PatchValue],
+    options: &PatchOptions,
+    file: &str,
+) -> Result<String, PatchError> {
+    if replacements.is_empty() {
+        return Err(unsupported(file, "appended member has no option values"));
+    }
+    let mut rendered = template.to_owned();
+    for (index, replacement) in replacements.iter().enumerate() {
+        let marker = format!("{{{{{index}}}}}");
+        if !rendered.contains(&marker) {
+            return Err(unsupported(
+                file,
+                "appended member is missing an option marker",
+            ));
+        }
+        rendered = rendered.replace(&marker, &options.replacement(*replacement));
+    }
+    if rendered.contains("{{") || rendered.contains("}}") {
+        return Err(unsupported(
+            file,
+            "appended member has an unresolved option marker",
+        ));
+    }
+    Ok(rendered)
+}
+
 fn locate_patch(
     doc: &QmlDoc<'_>,
     rule: PatchRule,
@@ -317,33 +346,42 @@ fn locate_patch(
                 file,
             )
         }
-        PatchRule::HandlerCondition {
-            root_id,
-            scope,
-            handler,
-            expected,
-            replacement,
-            expected_count,
-        } => {
-            let root = doc.object_by_id(root_id, file)?;
-            let scope = doc.child_object_with_property(
-                root,
-                scope.class,
-                scope.property,
-                scope.expected,
-                file,
-            )?;
-            let (body_open, body_close) = doc.handler_body(scope, handler, file)?;
-            condition_edits(
-                doc,
-                body_open,
-                body_close,
-                expected,
-                replacement,
-                expected_count,
-                file,
-            )
+        PatchRule::Import { module, version } => {
+            let Some(start) = doc.import_insert_offset(module, file)? else {
+                return Ok(Vec::new());
+            };
+            let newline = doc.line_ending();
+            Ok(vec![Edit {
+                start,
+                end: start,
+                replacement: format!("import {module} {version}{newline}"),
+            }])
         }
+        PatchRule::AppendMembers {
+            root_id,
+            anchor_property,
+            expected,
+            child_types,
+            member_template,
+            replacements,
+        } => {
+            let (start, indent) =
+                doc.object_member_insertion(root_id, anchor_property, expected, child_types, file)?;
+            let member = render_member_template(member_template, replacements, options, file)?;
+            let newline = doc.line_ending();
+            let mut insertion = String::from(newline);
+            for line in member.split('\n') {
+                insertion.push_str(&indent);
+                insertion.push_str(line);
+                insertion.push_str(newline);
+            }
+            Ok(vec![Edit {
+                start,
+                end: start,
+                replacement: insertion,
+            }])
+        }
+
         PatchRule::MultiSite { .. } => Err(unsupported(
             file,
             "multi-site patch groups must be resolved before matching a QML file",
