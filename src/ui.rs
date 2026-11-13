@@ -344,7 +344,6 @@ impl AppView {
         self.confirm_root_recovery = false;
         self.confirm_refresh = false;
         self.deployment_status = "Not applied".into();
-        self.refresh_status = "Not restarted".into();
         self.visual_result = "Not checked".into();
         self.error = None;
         self.status = status.to_owned();
@@ -560,16 +559,14 @@ impl AppView {
     fn refresh_display(&mut self, cx: &mut Context<Self>) {
         if self.busy
             || self.settings_open
-            || self.deployment_status != DEPLOY_SUCCESS
+            || self.settings_load_failed
+            || self.settings_file.is_none()
+            || self.config.ssh_target.is_empty()
             || !self.confirm_refresh
         {
             return;
         }
         let config = self.config.clone();
-        let selected_edits = self
-            .plan
-            .as_ref()
-            .map_or(0, |plan| plan.selected_labels.len());
         self.busy = true;
         self.error = None;
         self.status =
@@ -584,11 +581,7 @@ impl AppView {
                 this.busy = false;
                 match result {
                     Ok(()) => {
-                        this.status = format!(
-                            "Display service restarted; edits applied: {selected_edits}/{}; target mounts active: {}. Retired target paths remain unmounted. Check Quick Settings and Input Picker visually on the TV.",
-                            PATCHES.len(),
-                            TARGETS.len(),
-                        );
+                        this.status = "Restart complete. Visually check Quick Settings, the Input Picker, the Input Banner, and the No Signal screen on the TV.".into();
                         this.refresh_status = "Restarted; owner visual check pending".into();
                     }
                     Err(error) => {
@@ -646,6 +639,11 @@ impl Render for AppView {
             .plan
             .as_ref()
             .is_some_and(|plan| !plan.firmware_is_officially_tested());
+        let can_restart_service = !self.busy
+            && !self.settings_open
+            && !self.settings_load_failed
+            && self.settings_file.is_some()
+            && !self.config.ssh_target.is_empty();
         let can_apply = plan_ready
             && !self.busy
             && !self.settings_open
@@ -718,6 +716,33 @@ impl Render for AppView {
                                     .child("Edit connection settings"),
                             )
                     }),
+            )
+            .child(
+                div().flex().flex_col().gap_2().p_3().bg(rgb(0x22252b)).rounded_md()
+                    .child(div().text_lg().font_weight(gpui::FontWeight::BOLD).child("Display service"))
+                    .child(div().text_sm().text_color(rgb(0xf0d28a)).child("Remote checks require an active overlay and verify its backups and mounts before restart."))
+                    .child(
+                        div().flex().items_center().gap_2()
+                            .id("confirm-display-refresh")
+                            .debug_selector(|| "confirm-display-refresh".to_owned())
+                            .when(can_restart_service, |control| {
+                                control.cursor_pointer().on_click(cx.listener(|this, _, _, cx| {
+                                    this.confirm_refresh = !this.confirm_refresh;
+                                    cx.notify();
+                                }))
+                            })
+                            .child(if self.confirm_refresh { "[x]" } else { "[ ]" })
+                            .child("I approve this restart; it may interrupt the TV UI."),
+                    )
+                    .child(
+                        div().px_3().py_2().bg(if can_restart_service && self.confirm_refresh { rgb(0x8a4f20) } else { rgb(0x383a3d) }).rounded_md()
+                            .id("restart-display")
+                            .debug_selector(|| "restart-display".to_owned())
+                            .when(can_restart_service && self.confirm_refresh, |button| {
+                                button.cursor_pointer().on_click(cx.listener(|this, _, _, cx| this.refresh_display(cx)))
+                            })
+                            .child(if self.busy { "Working…" } else { "Restart display service" }),
+                    ),
             )
             .child(
                 div()
@@ -946,23 +971,8 @@ impl Render for AppView {
             .when(self.deployment_status == DEPLOY_SUCCESS, |element| {
                 element.child(
                     div().flex().flex_col().gap_2().p_3().bg(rgb(0x22252b)).rounded_md()
-                        .child(div().text_lg().font_weight(gpui::FontWeight::BOLD).child("Display refresh (separate approval)"))
-                        .child(div().text_color(rgb(0xf0d28a)).child("Restarting surface-manager-daemon.service may interrupt the TV UI. Nothing is restarted automatically."))
+                        .child(div().text_lg().font_weight(gpui::FontWeight::BOLD).child("Deployment report"))
                         .child(div().child(format!("Deployment: {}", deployment_summary.as_deref().unwrap_or(self.deployment_status.as_str()))))
-                        .child(div().child(format!("Refresh: {}", self.refresh_status)))
-                        .child(
-                            div().flex().items_center().gap_2().cursor_pointer()
-                                .id("confirm-display-refresh")
-                                .on_click(cx.listener(|this, _, _, cx| { this.confirm_refresh = !this.confirm_refresh; cx.notify(); }))
-                                .child(if self.confirm_refresh { "[x]" } else { "[ ]" })
-                                .child("I approve restarting this service now; the TV UI may be interrupted."),
-                        )
-                        .child(
-                            div().px_3().py_2().bg(if self.confirm_refresh && !self.busy { rgb(0x8a4f20) } else { rgb(0x383a3d) }).rounded_md()
-                                .id("restart-display")
-                                .when(self.confirm_refresh && !self.busy, |button| button.cursor_pointer().on_click(cx.listener(|this, _, _, cx| this.refresh_display(cx))))
-                                .child(if self.busy { "Working…" } else { "Restart display service" }),
-                        )
                         .child(div().child("Visual check:"))
                         .child(
                             div().flex().gap_2()
@@ -1536,6 +1546,57 @@ mod visual_layout_tests {
             window_cx
                 .debug_bounds("patch-option-editor-main-panel-color")
                 .is_some()
+        );
+    }
+
+    #[gpui::test]
+    async fn display_service_restart_control_is_visible_before_deployment(cx: &TestAppContext) {
+        let mut app_cx = (*cx).clone();
+        let (_view, window_cx) = app_cx.add_window_view(|_, cx| {
+            let mut config = UserConfig::default();
+            config.ssh_target = "root@tv.local".into();
+            let settings_fields = SettingsFields::new(&config, cx);
+            AppView {
+                settings_file: Some(SettingsFile::Explicit(PathBuf::from(
+                    "target/gui-restart/config.toml",
+                ))),
+                config,
+                settings_fields,
+                settings_open: false,
+                settings_load_failed: false,
+                selected_ids: BTreeSet::new(),
+                expanded_patch_ids: BTreeSet::new(),
+                expanded_area_ids: BTreeSet::new(),
+                plan: None,
+                busy: false,
+                error: None,
+                status: "Test".into(),
+                show_diff: false,
+                confirm_unverified: false,
+                confirm_root_recovery: false,
+                confirm_refresh: false,
+                deployment_status: "Not applied".into(),
+                refresh_status: "Not restarted".into(),
+                visual_result: "Not checked".into(),
+            }
+        });
+        window_cx.simulate_resize(size(px(1568.0), px(1491.0)));
+        window_cx.run_until_parked();
+
+        let restart_button = window_cx
+            .debug_bounds("restart-display")
+            .expect("display-service restart button should be visible before deployment");
+        let approval_control = window_cx
+            .debug_bounds("confirm-display-refresh")
+            .expect("display-service restart should require owner approval");
+        let quick_settings = window_cx
+            .debug_bounds("patch-area-quick-settings")
+            .expect("Quick Settings area should be rendered");
+        assert!(approval_control.size.height > px(0.0));
+        assert!(restart_button.origin.y < quick_settings.origin.y);
+        assert!(
+            restart_button.origin.y + restart_button.size.height <= px(1491.0),
+            "display-service restart control should fit in the initial window viewport",
         );
     }
     #[gpui::test]

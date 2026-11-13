@@ -43,7 +43,7 @@ Apply re-inspects the TV and refuses to deploy if the source, selection, connect
 cargo run -- device apply --expect-plan-fingerprint sha256:PASTE_FINGERPRINT --confirm-root-recovery --confirm-unverified
 ```
 
-The unverified-firmware acknowledgement is required when firmware is not maintainer-tested. Display refresh is a separate action and requires separate approval:
+The unverified-firmware acknowledgement is required when firmware is not maintainer-tested. Display refresh remains a separate action and requires separate approval:
 
 ```sh
 cargo run -- device restart-display --confirm-owner-approval
@@ -54,7 +54,7 @@ Text mode writes results to stdout and errors to stderr. `--format json` writes 
 
 ### GUI
 
-Select edits and inspect the TV. Tweak choices are grouped by area: Quick Settings, Input Picker, Input Banner, and No Signal. Edit connection and appearance settings, use the color picker beside any color hex field, adjust opacity and border width, and reset appearance defaults. The color picker changes RGB and preserves alpha; use hex entry to change alpha. Save settings to persist them. Review the pre-install summary and optional raw diff. Structurally compatible but unverified firmware requires an explicit warning confirmation. Applying also requires confirming root SSH recovery is available.
+Select edits and inspect the TV. Tweak choices are grouped by area: Quick Settings, Input Picker, Input Banner, and No Signal. Edit connection and appearance settings, use the color picker beside any color hex field, adjust opacity and border width, and reset appearance defaults. The color picker changes RGB and preserves alpha; use hex entry to change alpha. Save settings to persist them. Review the pre-install summary and optional raw diff. Structurally compatible but unverified firmware requires an explicit warning confirmation. Applying also requires confirming root SSH recovery is available. The Display service card offers a separate, owner-approved restart without requiring a deployment in the current session.
 
 The theme updates state in `/var/lib/webosbrew`; it does not write QML files into `/usr`, flash firmware, or install an IPK. A display-service restart can interrupt the TV UI. Visually check Quick Settings, the Input Picker, the Input Banner, and the No Signal screen after a refresh; successful deployment is not visual verification.
 
