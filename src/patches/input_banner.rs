@@ -1,6 +1,6 @@
 use super::{
     ChildObjectScope, PatchArea, PatchOption, PatchRule, PatchSite, PatchSpec, PatchValue,
-    ScalarTarget, TARGETS,
+    PatchVariant, ScalarTarget, TARGETS, WebOsMajor,
 };
 const INPUT_BANNER_MAIN_BACKGROUND_EDITS: [ScalarTarget; 2] = [
     ScalarTarget {
@@ -138,40 +138,60 @@ Rectangle {
         },
     },
 ];
-pub(super) const BACKGROUND: PatchSpec = PatchSpec {
-    area: PatchArea::InputBanner,
-    rule: PatchRule::MultiSite {
+const BACKGROUND_VARIANTS: [PatchVariant; 1] = [PatchVariant::new(
+    WebOsMajor::WEBOS_24,
+    TARGETS[8],
+    PatchRule::MultiSite {
         sites: &INPUT_BANNER_BACKGROUND_SITES,
     },
+)];
+
+const TEXT_COLOR_VARIANTS: [PatchVariant; 1] = [PatchVariant::new(
+    WebOsMajor::WEBOS_24,
+    TARGETS[9],
+    PatchRule::MultiSite {
+        sites: &INPUT_BANNER_TEXT_SITES,
+    },
+)];
+
+const DIVIDER_VARIANTS: [PatchVariant; 1] = [PatchVariant::new(
+    WebOsMajor::WEBOS_24,
+    TARGETS[8],
+    INPUT_BANNER_DIVIDER,
+)];
+
+const MENU_STYLE_VARIANTS: [PatchVariant; 1] = [PatchVariant::new(
+    WebOsMajor::WEBOS_24,
+    TARGETS[8],
+    PatchRule::MultiSite {
+        sites: &INPUT_BANNER_MENU_SITES,
+    },
+)];
+
+pub(super) const BACKGROUND: PatchSpec = PatchSpec {
+    area: PatchArea::InputBanner,
     id: "input-banner-background",
     label: "Remove the input source banner background",
-    target: TARGETS[8],
+    variants: &BACKGROUND_VARIANTS,
 };
 
 pub(super) const TEXT_COLOR: PatchSpec = PatchSpec {
     area: PatchArea::InputBanner,
-    rule: PatchRule::MultiSite {
-        sites: &INPUT_BANNER_TEXT_SITES,
-    },
     id: "input-banner-text-color",
     label: "Set the input source banner text color",
-    target: TARGETS[9],
+    variants: &TEXT_COLOR_VARIANTS,
 };
 
 pub(super) const DIVIDER: PatchSpec = PatchSpec {
     area: PatchArea::InputBanner,
-    rule: INPUT_BANNER_DIVIDER,
     id: "input-banner-divider",
     label: "Remove the input banner divider bar",
-    target: TARGETS[8],
+    variants: &DIVIDER_VARIANTS,
 };
 
 pub(super) const MENU_STYLE: PatchSpec = PatchSpec {
     area: PatchArea::InputBanner,
-    rule: PatchRule::MultiSite {
-        sites: &INPUT_BANNER_MENU_SITES,
-    },
     id: "input-banner-menu-color",
     label: "Style the input banner menu icon and focus state",
-    target: TARGETS[8],
+    variants: &MENU_STYLE_VARIANTS,
 };

@@ -70,11 +70,12 @@ fn collect_patch_edits(
     let mut edits: BTreeMap<String, Vec<Edit>> = BTreeMap::new();
     for patch in patches {
         let is_selected = selected.contains(patch.id);
-        match patch.rule {
+        let variant = patch.primary_variant();
+        match variant.rule {
             PatchRule::MultiSite { sites } => {
                 if sites.is_empty() {
                     return Err(unsupported(
-                        patch.target,
+                        variant.target,
                         "multi-site patch has no target sites",
                     ));
                 }
@@ -91,9 +92,9 @@ fn collect_patch_edits(
             }
             rule => append_site_edits(
                 &mut edits,
-                &docs[patch.target],
+                &docs[variant.target],
                 rule,
-                patch.target,
+                variant.target,
                 is_selected,
                 options,
             )?,

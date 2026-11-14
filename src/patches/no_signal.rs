@@ -1,10 +1,12 @@
 use super::{
-    FunctionStatementTarget, PatchArea, PatchOption, PatchRule, PatchSpec, PatchValue, TARGETS,
+    FunctionStatementTarget, PatchArea, PatchOption, PatchRule, PatchSpec, PatchValue,
+    PatchVariant, TARGETS, WebOsMajor,
 };
 
-pub(super) const ANIMATION: PatchSpec = PatchSpec {
-    area: PatchArea::NoSignal,
-    rule: PatchRule::Scalar {
+const ANIMATION_VARIANTS: [PatchVariant; 1] = [PatchVariant::new(
+    WebOsMajor::WEBOS_24,
+    TARGETS[10],
+    PatchRule::Scalar {
         root_id: "animation",
         scope: None,
         property: "visible",
@@ -13,14 +15,19 @@ pub(super) const ANIMATION: PatchSpec = PatchSpec {
             "currentKey !== \"noSignal\" && element.isDynamic && (headerText.text || bodyText.text)",
         ),
     },
+)];
+
+pub(super) const ANIMATION: PatchSpec = PatchSpec {
+    area: PatchArea::NoSignal,
     id: "no-signal-animation",
     label: "Hide the No Signal GIF",
-    target: TARGETS[10],
+    variants: &ANIMATION_VARIANTS,
 };
 
-pub(super) const MOVEMENT: PatchSpec = PatchSpec {
-    area: PatchArea::NoSignal,
-    rule: PatchRule::Scalar {
+const MOVEMENT_VARIANTS: [PatchVariant; 1] = [PatchVariant::new(
+    WebOsMajor::WEBOS_24,
+    TARGETS[10],
+    PatchRule::Scalar {
         root_id: "element",
         scope: None,
         property: "isMoving",
@@ -29,9 +36,13 @@ pub(super) const MOVEMENT: PatchSpec = PatchSpec {
             "currentKey !== \"noSignal\" && isDynamic && systemProperties.isAppActivated",
         ),
     },
+)];
+
+pub(super) const MOVEMENT: PatchSpec = PatchSpec {
+    area: PatchArea::NoSignal,
     id: "no-signal-movement",
     label: "Stop No Signal screen movement",
-    target: TARGETS[10],
+    variants: &MOVEMENT_VARIANTS,
 };
 
 const NO_SIGNAL_INSTRUCTION_STATEMENTS: [FunctionStatementTarget; 2] = [
@@ -49,27 +60,37 @@ const NO_SIGNAL_INSTRUCTION_STATEMENTS: [FunctionStatementTarget; 2] = [
     },
 ];
 
-pub(super) const INSTRUCTIONS: PatchSpec = PatchSpec {
-    area: PatchArea::NoSignal,
-    rule: PatchRule::FunctionStatements {
+const INSTRUCTIONS_VARIANTS: [PatchVariant; 1] = [PatchVariant::new(
+    WebOsMajor::WEBOS_24,
+    TARGETS[10],
+    PatchRule::FunctionStatements {
         root_id: "screensaverRoot",
         targets: &NO_SIGNAL_INSTRUCTION_STATEMENTS,
     },
+)];
+
+pub(super) const INSTRUCTIONS: PatchSpec = PatchSpec {
+    area: PatchArea::NoSignal,
     id: "no-signal-instructions",
     label: "Hide No Signal connection instructions",
-    target: TARGETS[10],
+    variants: &INSTRUCTIONS_VARIANTS,
 };
 
-pub(super) const TEXT_COLOR: PatchSpec = PatchSpec {
-    area: PatchArea::NoSignal,
-    rule: PatchRule::Scalar {
+const TEXT_COLOR_VARIANTS: [PatchVariant; 1] = [PatchVariant::new(
+    WebOsMajor::WEBOS_24,
+    TARGETS[11],
+    PatchRule::Scalar {
         root_id: "root",
         scope: None,
         property: "color",
         expected: "\"#E6E6E6\"",
         replacement: PatchValue::Option(PatchOption::NoSignalTextColor),
     },
+)];
+
+pub(super) const TEXT_COLOR: PatchSpec = PatchSpec {
+    area: PatchArea::NoSignal,
     id: "no-signal-text-color",
     label: "Set No Signal text color",
-    target: TARGETS[11],
+    variants: &TEXT_COLOR_VARIANTS,
 };

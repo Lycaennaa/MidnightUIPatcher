@@ -694,7 +694,7 @@ fn run_patches(command: PatchesCommand) -> Result<CommandResult, CommandFailure>
                     json!({
                         "id": patch.id,
                         "label": patch.label,
-                        "target": patch.target,
+                        "target": patch.primary_target(),
                         "targets": patch.affected_targets().collect::<Vec<_>>(),
                         "options": PATCH_OPTION_SPECS
                             .iter()
@@ -970,7 +970,7 @@ fn plan_value(plan: &DeploymentPlan, fingerprint: &str, include_diff: bool) -> V
             json!({
                 "id": patch.id,
                 "label": patch.label,
-                "target": patch.target,
+                "target": patch.primary_target(),
                 "targets": patch.affected_targets().collect::<Vec<_>>(),
             })
         })

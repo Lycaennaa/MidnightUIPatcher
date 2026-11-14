@@ -9,6 +9,16 @@ pub enum PatchOptionKind {
     BorderWidth,
 }
 
+impl PatchOptionKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Color => "color",
+            Self::Opacity => "opacity",
+            Self::RelativeWidth => "relative-width",
+            Self::BorderWidth => "border-width",
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PatchOption {
     MainPanelColor,
@@ -29,6 +39,20 @@ pub(crate) enum PatchOption {
     NoSignalTextColor,
 }
 
+impl PatchOption {
+    pub(crate) fn canonical_id(self) -> &'static str {
+        option_spec_by_option(self).id
+    }
+
+    pub(crate) fn kind(self) -> PatchOptionKind {
+        option_spec_by_option(self).kind
+    }
+
+    pub(crate) fn qml_format_signature(self) -> String {
+        option_spec_by_option(self).qml_format.signature()
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum PatchOptionQmlFormat {
     Direct,
@@ -38,6 +62,23 @@ enum PatchOptionQmlFormat {
 }
 
 impl PatchOptionQmlFormat {
+    const fn signature_id(self) -> &'static str {
+        match self {
+            Self::Direct => "direct:v1",
+            Self::CurrentInputColor => "current-input-color:v1",
+            Self::CurrentInputWidth => "current-input-width:v1",
+            Self::NoSignalTextColor => "no-signal-text-color:v1",
+        }
+    }
+
+    fn signature(self) -> String {
+        format!(
+            "{}:{}",
+            self.signature_id(),
+            self.apply("{VALUE}".to_owned())
+        )
+    }
+
     fn apply(self, value: String) -> String {
         match self {
             Self::Direct => value,
@@ -585,5 +626,18 @@ fn qml_number(value: f64) -> String {
         "0".to_owned()
     } else {
         value.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn patch_option_canonical_ids_match_specs() {
+        for spec in PATCH_OPTION_SPECS {
+            assert_eq!(spec.option.canonical_id(), spec.id);
+            assert!(!spec.option.qml_format_signature().is_empty());
+        }
     }
 }

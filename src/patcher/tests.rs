@@ -1,7 +1,7 @@
 use super::*;
 use crate::patches::{
     ChildObjectScope, FunctionStatementTarget, PATCH_OPTION_SPECS, PatchArea, PatchOption,
-    PatchValue, ScalarTarget,
+    PatchValue, PatchVariant, ScalarTarget, WebOsMajor,
 };
 mod appearance_options;
 mod input_banner;
@@ -416,32 +416,40 @@ fn unselected_patch_sites_are_still_validated() {
     let input = r##"Item { id: fixtureRoot; color: "#112233" }"##;
     let doc = QmlDoc::parse(input, "fixture.qml").unwrap();
     let docs = BTreeMap::from([("fixture.qml".to_owned(), doc)]);
+    const SELECTED_VARIANTS: [PatchVariant; 1] = [PatchVariant::new(
+        WebOsMajor::WEBOS_24,
+        "fixture.qml",
+        PatchRule::Scalar {
+            root_id: "fixtureRoot",
+            scope: None,
+            property: "color",
+            expected: "\"#112233\"",
+            replacement: PatchValue::Literal("\"#000000\""),
+        },
+    )];
+    const UNSELECTED_VARIANTS: [PatchVariant; 1] = [PatchVariant::new(
+        WebOsMajor::WEBOS_24,
+        "fixture.qml",
+        PatchRule::Scalar {
+            root_id: "fixtureRoot",
+            scope: None,
+            property: "color",
+            expected: "\"#445566\"",
+            replacement: PatchValue::Literal("\"#000000\""),
+        },
+    )];
     let patches = [
         PatchSpec {
             area: PatchArea::QuickSettings,
-            rule: PatchRule::Scalar {
-                root_id: "fixtureRoot",
-                scope: None,
-                property: "color",
-                expected: "\"#112233\"",
-                replacement: PatchValue::Literal("\"#000000\""),
-            },
             id: "selected",
             label: "selected patch",
-            target: "fixture.qml",
+            variants: &SELECTED_VARIANTS,
         },
         PatchSpec {
             area: PatchArea::QuickSettings,
-            rule: PatchRule::Scalar {
-                root_id: "fixtureRoot",
-                scope: None,
-                property: "color",
-                expected: "\"#445566\"",
-                replacement: PatchValue::Literal("\"#000000\""),
-            },
             id: "unselected",
             label: "unselected patch",
-            target: "fixture.qml",
+            variants: &UNSELECTED_VARIANTS,
         },
     ];
     let selected = BTreeSet::from(["selected".to_owned()]);
