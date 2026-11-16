@@ -15,6 +15,9 @@ use crate::config::{self, ConfigError, UserConfig, identity_path, ssh_config_pat
 use crate::patcher::{self, PatchError};
 use crate::patches::{PATCH_OPTION_SPECS, PATCHES, PatchOptions, TARGETS};
 
+mod capture;
+pub use capture::capture_system_ui;
+
 const ASKPASS_SCRIPT: &str = include_str!("../support/ssh-askpass.sh");
 const TESTED_FIRMWARE_LABEL: Option<&str> = None;
 const MAX_QML_FILE_BYTES: u64 = 16 * 1024 * 1024;
@@ -354,6 +357,8 @@ pub enum DeployError {
         operation: &'static str,
         detail: String,
     },
+    #[error("system UI capture failed: {0}")]
+    Capture(String),
     #[error("TV reported an unsafe state: {0}")]
     UnsafeRemoteState(String),
     #[error("source archive is invalid: {0}")]

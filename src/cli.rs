@@ -21,7 +21,7 @@ const DEPLOY_REFRESH_PENDING: &str = "Pending owner approval";
 #[command(
     name = "midnight-ui-patcher",
     version,
-    about = "Inspect and manage the LG webOS Quick Settings and Input Picker theme",
+    about = "Manage the LG webOS theme and capture System UI graphics",
     after_help = "Start with `patches list` or `device inspect`. Applying rechecks the inspected plan and requires explicit safety confirmations.",
     arg_required_else_help = true,
     disable_help_subcommand = true
@@ -61,7 +61,7 @@ enum AppCommand {
     #[command(subcommand)]
     Patches(PatchesCommand),
 
-    /// Inspect, apply, or refresh the TV theme.
+    /// Inspect, apply, capture System UI, or refresh the TV theme.
     #[command(
         subcommand,
         after_help = "Inspection fetches current QML over root SSH. Apply re-inspects and compares the reviewed fingerprint before changing device state."
@@ -153,6 +153,8 @@ struct InspectArgs {
 enum DeviceCommand {
     /// Fetch current TV state and preview the selected edits without changing the TV.
     Inspect(InspectArgs),
+    /// Capture the current System UI graphics plane to the project screenshots folder.
+    CaptureSystemUi(CaptureSystemUiArgs),
     /// Re-inspect and apply only if the reviewed plan fingerprint still matches.
     #[command(
         after_help = "Run `device inspect` first. Pass its `plan_fingerprint` here. This command fetches the QML again and aborts if the fingerprint changed. Root recovery must be confirmed; unverified firmware needs a separate acknowledgement."
@@ -190,6 +192,16 @@ struct RestartDisplayArgs {
     /// Approve restarting surface-manager-daemon.service now; the TV UI may be interrupted.
     #[arg(long)]
     confirm_owner_approval: bool,
+}
+#[derive(Debug, Args)]
+struct CaptureSystemUiArgs {
+    /// Tested UI area; included in the screenshot filename.
+    #[arg(
+        long,
+        value_name = "AREA",
+        help = "quick-settings, input-picker, input-banner, or no-signal"
+    )]
+    area: String,
 }
 
 #[derive(Debug, Args)]
@@ -738,9 +750,28 @@ fn run_device(
 ) -> Result<CommandResult, CommandFailure> {
     match command {
         DeviceCommand::Inspect(selection) => inspect(selection, config_path),
+        DeviceCommand::CaptureSystemUi(args) => capture_system_ui(args, config_path),
         DeviceCommand::Apply(args) => apply(args, config_path),
         DeviceCommand::RestartDisplay(args) => restart_display(args, config_path),
     }
+}
+
+fn capture_system_ui(
+    args: CaptureSystemUiArgs,
+    config_path: Option<&Path>,
+) -> Result<CommandResult, CommandFailure> {
+    let (_, settings) = load_settings(config_path)?;
+    let path = deploy::capture_system_ui(&settings, &args.area).map_err(deploy_failure)?;
+    let saved_path = path.display().to_string();
+    let text = format!("Saved GRAPHIC PNG for {} to {saved_path}\n", args.area);
+    Ok(CommandResult {
+        text,
+        data: json!({
+            "capture_method": "GRAPHIC",
+            "tested_area": args.area,
+            "path": saved_path,
+        }),
+    })
 }
 
 fn inspect(
@@ -1580,5 +1611,23 @@ mod tests {
             cli.command,
             AppCommand::Device(DeviceCommand::Inspect(_))
         ));
+    }
+    #[test]
+    fn cli_requires_a_test_area_for_system_ui_capture() {
+        let cli = Cli::try_parse_from([
+            "midnight-ui-patcher",
+            "device",
+            "capture-system-ui",
+            "--area",
+            "input-picker",
+        ])
+        .unwrap();
+        let AppCommand::Device(DeviceCommand::CaptureSystemUi(args)) = cli.command else {
+            panic!("system UI capture arguments should parse");
+        };
+        assert_eq!(args.area, "input-picker");
+        assert!(
+            Cli::try_parse_from(["midnight-ui-patcher", "device", "capture-system-ui"]).is_err()
+        );
     }
 }

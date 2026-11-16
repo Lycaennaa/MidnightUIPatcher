@@ -94,6 +94,7 @@ struct AppView {
     confirm_unverified: bool,
     confirm_root_recovery: bool,
     confirm_refresh: bool,
+    capture_area: Option<PatchArea>,
     deployment_status: String,
     refresh_status: String,
     visual_result: String,
@@ -267,6 +268,7 @@ impl AppView {
             confirm_unverified: false,
             confirm_root_recovery: false,
             confirm_refresh: false,
+            capture_area: None,
             deployment_status: "Not applied".into(),
             refresh_status: "Not restarted".into(),
             visual_result: "Not checked".into(),
@@ -595,6 +597,65 @@ impl AppView {
         }).detach();
     }
 
+    fn select_capture_area(&mut self, area: PatchArea, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        self.capture_area = Some(area);
+        self.error = None;
+        self.status = format!(
+            "Selected {}. Open that overlay on the TV before capturing.",
+            area.label()
+        );
+        cx.notify();
+    }
+
+    fn capture_system_ui(&mut self, cx: &mut Context<Self>) {
+        if self.busy
+            || self.settings_open
+            || self.settings_load_failed
+            || self.settings_file.is_none()
+            || self.config.ssh_target.is_empty()
+        {
+            return;
+        }
+        let Some(area) = self.capture_area else {
+            return;
+        };
+        let config = self.config.clone();
+        self.busy = true;
+        self.error = None;
+        self.status = format!(
+            "Capturing the {} GRAPHIC plane over root SSH…",
+            area.label()
+        );
+        cx.notify();
+        cx.spawn(async move |weak, async_cx| {
+            let result = async_cx
+                .background_spawn(async move { deploy::capture_system_ui(&config, area.id()) })
+                .await;
+            let _ = weak.update(async_cx, |this, cx| {
+                this.busy = false;
+                match result {
+                    Ok(path) => {
+                        this.status = format!(
+                            "Saved GRAPHIC PNG for {} to {}.",
+                            area.label(),
+                            path.display()
+                        );
+                    }
+                    Err(error) => {
+                        this.status =
+                            "System UI capture failed; no local screenshot was kept.".into();
+                        this.error = Some(error.to_string());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn report(&self) -> String {
         match &self.plan {
             Some(plan) => {
@@ -644,6 +705,12 @@ impl Render for AppView {
             && !self.settings_load_failed
             && self.settings_file.is_some()
             && !self.config.ssh_target.is_empty();
+        let can_capture = !self.busy
+            && !self.settings_open
+            && !self.settings_load_failed
+            && self.settings_file.is_some()
+            && !self.config.ssh_target.is_empty()
+            && self.capture_area.is_some();
         let can_apply = plan_ready
             && !self.busy
             && !self.settings_open
@@ -742,6 +809,50 @@ impl Render for AppView {
                                 button.cursor_pointer().on_click(cx.listener(|this, _, _, cx| this.refresh_display(cx)))
                             })
                             .child(if self.busy { "Working…" } else { "Restart display service" }),
+                    ),
+            )
+            .child(
+                div().flex().flex_col().gap_2().p_3().bg(rgb(0x22252b)).rounded_md()
+                    .child(div().text_lg().font_weight(gpui::FontWeight::BOLD).child("System UI capture"))
+                    .child(div().text_sm().text_color(rgb(0xb7bbc2)).child("Open the overlay on the TV, select its test area, then capture. The TV supplies model and firmware metadata; captures use only the GRAPHIC PNG plane, never source video. PNGs stay in the project-root screenshots/ folder."))
+                    .child(
+                        div().flex().flex_wrap().gap_2()
+                            .children(PatchArea::ALL.into_iter().map(|area| {
+                                let selected = self.capture_area == Some(area);
+                                div().flex().items_center().gap_1().px_3().py_2()
+                                    .bg(if selected { rgb(0x315a88) } else { rgb(0x343944) })
+                                    .rounded_md()
+                                    .id(SharedString::from(format!("capture-area-{}", area.id())))
+                                    .debug_selector(move || format!(
+                                        "capture-area-{}-{}",
+                                        if selected { "selected" } else { "unselected" },
+                                        area.id()
+                                    ))
+                                    .when(!self.busy, |button| {
+                                        button.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| {
+                                            this.select_capture_area(area, cx)
+                                        }))
+                                    })
+                                    .child(if selected { "[x]" } else { "[ ]" })
+                                    .child(area.label())
+                            }))
+                    )
+                    .child(
+                        div().px_3().py_2()
+                            .bg(if can_capture { rgb(0x315a88) } else { rgb(0x383a3d) })
+                            .rounded_md()
+                            .id("capture-system-ui")
+                            .debug_selector(move || if can_capture {
+                                "capture-system-ui-ready".to_owned()
+                            } else {
+                                "capture-system-ui-disabled".to_owned()
+                            })
+                            .when(can_capture, |button| {
+                                button.cursor_pointer().on_click(cx.listener(|this, _, _, cx| {
+                                    this.capture_system_ui(cx)
+                                }))
+                            })
+                            .child(if self.busy { "Working…" } else { "Capture current System UI" }),
                     ),
             )
             .child(
@@ -1346,6 +1457,7 @@ mod color_picker_ui_tests {
                 confirm_unverified: false,
                 confirm_root_recovery: false,
                 confirm_refresh: false,
+                capture_area: None,
                 deployment_status: "Not applied".into(),
                 refresh_status: "Not restarted".into(),
                 visual_result: "Not checked".into(),
@@ -1409,12 +1521,13 @@ mod visual_layout_tests {
                 confirm_unverified: false,
                 confirm_root_recovery: false,
                 confirm_refresh: false,
+                capture_area: None,
                 deployment_status: "Not applied".into(),
                 refresh_status: "Not restarted".into(),
                 visual_result: "Not checked".into(),
             }
         });
-        window_cx.simulate_resize(size(px(1568.0), px(1195.0)));
+        window_cx.simulate_resize(size(px(1568.0), px(1800.0)));
         window_cx.run_until_parked();
 
         let bounds = window_cx
@@ -1575,6 +1688,7 @@ mod visual_layout_tests {
                 confirm_unverified: false,
                 confirm_root_recovery: false,
                 confirm_refresh: false,
+                capture_area: None,
                 deployment_status: "Not applied".into(),
                 refresh_status: "Not restarted".into(),
                 visual_result: "Not checked".into(),
@@ -1600,6 +1714,59 @@ mod visual_layout_tests {
         );
     }
     #[gpui::test]
+    async fn system_ui_capture_requires_area_and_marks_selected_area(cx: &TestAppContext) {
+        let mut app_cx = (*cx).clone();
+        let (_view, window_cx) = app_cx.add_window_view(|_, cx| {
+            let mut config = UserConfig::default();
+            config.ssh_target = "root@tv.local".into();
+            let settings_fields = SettingsFields::new(&config, cx);
+            AppView {
+                settings_file: Some(SettingsFile::Explicit(PathBuf::from(
+                    "target/gui-capture/config.toml",
+                ))),
+                config,
+                settings_fields,
+                settings_open: false,
+                settings_load_failed: false,
+                selected_ids: BTreeSet::new(),
+                expanded_patch_ids: BTreeSet::new(),
+                expanded_area_ids: BTreeSet::new(),
+                plan: None,
+                busy: false,
+                error: None,
+                status: "Test".into(),
+                show_diff: false,
+                confirm_unverified: false,
+                confirm_root_recovery: false,
+                confirm_refresh: false,
+                capture_area: None,
+                deployment_status: "Not applied".into(),
+                refresh_status: "Not restarted".into(),
+                visual_result: "Not checked".into(),
+            }
+        });
+        window_cx.simulate_resize(size(px(1568.0), px(2400.0)));
+        window_cx.run_until_parked();
+
+        assert!(
+            window_cx
+                .debug_bounds("capture-system-ui-disabled")
+                .is_some()
+        );
+        let input_picker = window_cx
+            .debug_bounds("capture-area-unselected-input-picker")
+            .expect("Input Picker should be a selectable capture area");
+        window_cx.simulate_click(input_picker.center(), gpui::Modifiers::default());
+        window_cx.run_until_parked();
+        assert!(
+            window_cx
+                .debug_bounds("capture-area-selected-input-picker")
+                .is_some()
+        );
+        assert!(window_cx.debug_bounds("capture-system-ui-ready").is_some());
+    }
+
+    #[gpui::test]
     async fn bulk_controls_track_area_and_tweak_state(cx: &TestAppContext) {
         let mut app_cx = (*cx).clone();
         let (_view, window_cx) = app_cx.add_window_view(|_, cx| {
@@ -1621,6 +1788,7 @@ mod visual_layout_tests {
                 confirm_unverified: false,
                 confirm_root_recovery: false,
                 confirm_refresh: false,
+                capture_area: None,
                 deployment_status: "Not applied".into(),
                 refresh_status: "Not restarted".into(),
                 visual_result: "Not checked".into(),
@@ -1760,6 +1928,7 @@ mod visual_layout_tests {
                 confirm_unverified: false,
                 confirm_root_recovery: false,
                 confirm_refresh: false,
+                capture_area: None,
                 deployment_status: "Not applied".into(),
                 refresh_status: "Not restarted".into(),
                 visual_result: "Not checked".into(),
@@ -1816,6 +1985,7 @@ mod visual_layout_tests {
                 confirm_unverified: false,
                 confirm_root_recovery: false,
                 confirm_refresh: false,
+                capture_area: None,
                 deployment_status: "Not applied".into(),
                 refresh_status: "Not restarted".into(),
                 visual_result: "Not checked".into(),
