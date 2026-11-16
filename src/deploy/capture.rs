@@ -8,214 +8,43 @@ use crate::patches::PatchArea;
 
 use super::{DeployError, ssh_input};
 
-const MAX_GRAPHIC_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CAPTURE_NAME_COMPONENT_BYTES: usize = 48;
 const CAPTURE_DEVICE_METADATA_PREFIX: &str = "CAPTURE_DEVICE_METADATA=";
-const GRAPHIC_CAPTURE_SCRIPT: &str = r#"set -eu
-umask 077
-capture_dir="$(mktemp -d /tmp/systemui-graphic-XXXXXX)"
-trap 'rm -rf "$capture_dir"' EXIT
-capture_file="$capture_dir/capture.png"
-metadata_file="$capture_dir/device-info.json"
-node - "$metadata_file" <<'INFO_NODE'
-var fs = require('fs');
-var palmbus = require('/usr/lib/nodejs/palmbus.js');
-var bus = new palmbus.Handle('', true);
-var finished = false;
-var timeout;
-function finish(status, error) {
-    if (finished) {
-        return;
-    }
-    finished = true;
-    clearTimeout(timeout);
-    if (error) {
-        process.stderr.write(error + '\n', function () {
-            process.exit(status);
-        });
-    } else {
-        process.exit(status);
-    }
-}
-timeout = setTimeout(function () {
-    finish(124, 'TV information service response timeout');
-}, 15000);
-try {
-    var call = bus.call(
-        'luna://com.webos.service.tv.systemproperty/getSystemInfo',
-        JSON.stringify({ keys: ['modelName', 'firmwareVersion'] })
-    );
-    call.setResponseTimeout(15000);
-    call.addListener('response', function (message) {
-        if (finished) {
-            return;
-        }
-        var result;
-        try {
-            result = JSON.parse(message.payload());
-        } catch (error) {
-            finish(1, 'TV information service returned an invalid response');
-            return;
-        }
-        if (
-            !result ||
-            result.returnValue !== true ||
-            typeof result.modelName !== 'string' ||
-            !result.modelName.trim() ||
-            typeof result.firmwareVersion !== 'string' ||
-            !result.firmwareVersion.trim()
-        ) {
-            finish(1, 'TV did not return model and firmware information');
-            return;
-        }
-        try {
-            fs.writeFileSync(
-                process.argv[2],
-                JSON.stringify({
-                    modelName: result.modelName,
-                    firmwareVersion: result.firmwareVersion
-                }),
-                { mode: 0o600 }
-            );
-        } catch (error) {
-            finish(1, 'Could not save TV metadata temporarily');
-            return;
-        }
-        finish(0, null);
-    });
-} catch (error) {
-    finish(1, 'Could not request TV model and firmware information');
-}
-INFO_NODE
-response_status=0
-response="$(node -e '
-var palmbus = require("/usr/lib/nodejs/palmbus.js");
-var bus = new palmbus.Handle("", true);
-var request = JSON.stringify({
-    path: process.argv[1],
-    method: "GRAPHIC",
-    format: "PNG",
-    width: 1920,
-    height: 1080
-});
-var finished = false;
-var timeout = setTimeout(function () {
-    process.stderr.write("Capture service response timeout\n");
-    process.exit(124);
-}, 31000);
-var call = bus.call("luna://com.webos.service.capture/executeOneShot", request);
-call.setResponseTimeout(30000);
-call.addListener("response", function (message) {
-    var payload = message.payload();
-    var status = 0;
-    try {
-        var result = JSON.parse(payload);
-        if (result.returnValue !== true) {
-            status = 1;
-        }
-    } catch (error) {
-        status = 2;
-    }
-    if (finished) {
-        return;
-    }
-    finished = true;
-    clearTimeout(timeout);
-    process.stdout.write(payload + "\n", function () {
-        process.exit(status);
-    });
-});
-' "$capture_file")" || response_status=$?
-if [ "$response_status" -ne 0 ]; then
-    service_error="$(printf '%s\n' "$response" | node -e '
-var fs = require("fs");
-var result;
-try {
-    result = JSON.parse(fs.readFileSync(0, "utf8"));
-} catch (error) {
-    process.exit(0);
-}
-var details = [];
-["errorCode", "errorText"].forEach(function (key) {
-    var value = result && result[key];
-    if (typeof value === "string" || typeof value === "number") {
-        value = String(value).replace(/[\u0000-\u001f\u007f]/g, " ").trim();
-        if (value) {
-            details.push(key + "=" + value.slice(0, 256));
-        }
-    }
-});
-process.stdout.write(details.join("; ").slice(0, 512));
-')"
-    if [ -n "$service_error" ]; then
-        printf 'Capture service request failed (status %s): %s\n' "$response_status" "$service_error" >&2
-    else
-        printf 'Capture service request failed (status %s).\n' "$response_status" >&2
-    fi
-    exit 1
-fi
-attempt=0
-while [ "$attempt" -lt 20 ] && [ ! -s "$capture_file" ]; do
-    sleep 0.5
-    attempt=$((attempt + 1))
-done
-if [ ! -s "$capture_file" ]; then
-    echo 'GRAPHIC capture produced no PNG' >&2
-    exit 1
-fi
-capture_size="$(wc -c < "$capture_file" | tr -d '[:space:]')"
-case "$capture_size" in
-    ''|*[!0-9]*)
-        echo 'GRAPHIC capture returned an invalid byte count' >&2
-        exit 1
-        ;;
-esac
-if [ "$capture_size" -gt "$1" ]; then
-    echo 'GRAPHIC capture exceeded the size limit' >&2
-    exit 1
-fi
-if [ ! -s "$metadata_file" ]; then
-    echo 'TV returned no model or firmware metadata' >&2
-    exit 1
-fi
-metadata_size="$(wc -c < "$metadata_file" | tr -d '[:space:]')"
-case "$metadata_size" in
-    ''|*[!0-9]*)
-        echo 'TV metadata had an invalid byte count' >&2
-        exit 1
-        ;;
-esac
-if [ "$metadata_size" -gt 4096 ]; then
-    echo 'TV metadata exceeded the size limit' >&2
-    exit 1
-fi
-metadata_json="$(cat "$metadata_file")"
-printf 'CAPTURE_DEVICE_METADATA=%s\n' "$metadata_json" >&2
-cat "$capture_file"
-"#;
+const CAPTURE_SURFACE_METADATA_PREFIX: &str = "CAPTURE_SURFACE_METADATA=";
+const CAPTURE_WIDTH: u32 = 1920;
+const CAPTURE_HEIGHT: u32 = 1080;
+const CHECKERBOARD_TILE_SIZE: usize = 48;
+const CHECKERBOARD_DARK: u8 = 56;
+const CHECKERBOARD_LIGHT: u8 = 176;
+const HALGAL_PIXEL_FORMAT_BGRA32: u16 = 0;
+const HALGAL_CHECKERBOARD_CAPTURE_SCRIPT: &str =
+    include_str!("capture/halgal-checkerboard-capture.sh");
 
 pub fn capture_system_ui(config: &UserConfig, area_id: &str) -> Result<PathBuf, DeployError> {
     let area = capture_area_by_id(area_id)?;
     config::validate(config)?;
     let timestamp = capture_timestamp()?;
-    let remote_command = format!("sh -s -- {MAX_GRAPHIC_CAPTURE_BYTES}");
+    let remote_command = format!("sh -s -- {MAX_CAPTURE_BYTES}");
     let output = ssh_input(
         config,
         &remote_command,
-        GRAPHIC_CAPTURE_SCRIPT.as_bytes(),
-        "GRAPHIC-only System UI capture",
+        HALGAL_CHECKERBOARD_CAPTURE_SCRIPT.as_bytes(),
+        "checkerboard System UI capture",
     )?;
     if output.stdout.is_empty() {
         return Err(DeployError::Capture(
-            "the TV returned an empty GRAPHIC capture".into(),
+            "the TV returned an empty HAL_GAL capture".into(),
         ));
     }
-    if output.stdout.len() > MAX_GRAPHIC_CAPTURE_BYTES {
+    if output.stdout.len() > MAX_CAPTURE_BYTES {
         return Err(DeployError::Capture(
             "the TV capture exceeded the size limit".into(),
         ));
     }
     let (model, firmware) = capture_metadata_from_stderr(&output.stderr)?;
+    let surface = capture_surface_metadata_from_stderr(&output.stderr)?;
+    let png = checkerboard_png(&output.stdout, &surface)?;
     let filename_stem = capture_file_stem(&model, &firmware, &timestamp, area)?;
     let screenshot_directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("screenshots");
     fs::create_dir_all(&screenshot_directory).map_err(|error| {
@@ -224,7 +53,7 @@ pub fn capture_system_ui(config: &UserConfig, area_id: &str) -> Result<PathBuf, 
         ))
     })?;
     let (path, mut file) = reserve_capture_file(&screenshot_directory, &filename_stem)?;
-    if let Err(error) = file.write_all(&output.stdout) {
+    if let Err(error) = file.write_all(&png) {
         drop(file);
         let _ = fs::remove_file(&path);
         return Err(DeployError::Capture(format!(
@@ -266,6 +95,116 @@ fn capture_metadata_from_stderr(stderr: &[u8]) -> Result<(String, String), Deplo
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| DeployError::Capture("TV returned no firmware version".into()))?;
     Ok((model.to_owned(), firmware.to_owned()))
+}
+#[derive(Debug, PartialEq, Eq, serde::Deserialize)]
+struct CaptureSurfaceMetadata {
+    width: u32,
+    height: u32,
+    pitch: usize,
+    bpp: u16,
+    #[serde(rename = "pixelFormat")]
+    pixel_format: u16,
+    length: usize,
+}
+
+fn capture_surface_metadata_from_stderr(
+    stderr: &[u8],
+) -> Result<CaptureSurfaceMetadata, DeployError> {
+    let stderr = std::str::from_utf8(stderr)
+        .map_err(|_| DeployError::Capture("HAL_GAL metadata was not valid text".into()))?;
+    let metadata = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix(CAPTURE_SURFACE_METADATA_PREFIX))
+        .ok_or_else(|| DeployError::Capture("TV returned no HAL_GAL surface metadata".into()))?;
+    serde_json::from_str(metadata)
+        .map_err(|_| DeployError::Capture("HAL_GAL surface metadata was invalid JSON".into()))
+}
+
+fn checkerboard_png(bgra: &[u8], surface: &CaptureSurfaceMetadata) -> Result<Vec<u8>, DeployError> {
+    if surface.width == 0
+        || surface.height == 0
+        || surface.width > CAPTURE_WIDTH
+        || surface.height > CAPTURE_HEIGHT
+        || surface.bpp != 32
+        || surface.pixel_format != HALGAL_PIXEL_FORMAT_BGRA32
+    {
+        return Err(DeployError::Capture(
+            "TV returned an unsupported HAL_GAL surface format".into(),
+        ));
+    }
+    let width = surface.width as usize;
+    let height = surface.height as usize;
+    let row_bytes = width
+        .checked_mul(4)
+        .ok_or_else(|| DeployError::Capture("HAL_GAL row size overflowed".into()))?;
+    let frame_bytes = surface
+        .pitch
+        .checked_mul(height)
+        .ok_or_else(|| DeployError::Capture("HAL_GAL frame size overflowed".into()))?;
+    if surface.pitch < row_bytes
+        || surface.length < frame_bytes
+        || surface.length > MAX_CAPTURE_BYTES
+        || bgra.len() != surface.length
+    {
+        return Err(DeployError::Capture(
+            "TV returned an incomplete or oversized HAL_GAL surface".into(),
+        ));
+    }
+
+    let mut png_bytes = Vec::new();
+    let mut encoder = png::Encoder::new(&mut png_bytes, surface.width, surface.height);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().map_err(|error| {
+        DeployError::Capture(format!("could not encode checkerboard PNG: {error}"))
+    })?;
+    {
+        let mut stream = writer.stream_writer().map_err(|error| {
+            DeployError::Capture(format!("could not encode checkerboard PNG: {error}"))
+        })?;
+        let mut row = vec![0; width * 3];
+        for y in 0..height {
+            let source_start = y * surface.pitch;
+            let source_row = &bgra[source_start..source_start + row_bytes];
+            for (x, pixel) in source_row.chunks_exact(4).enumerate() {
+                let [blue, green, red, alpha] = [pixel[0], pixel[1], pixel[2], pixel[3]];
+                let matte = if ((x / CHECKERBOARD_TILE_SIZE + y / CHECKERBOARD_TILE_SIZE) & 1) == 0
+                {
+                    CHECKERBOARD_DARK
+                } else {
+                    CHECKERBOARD_LIGHT
+                };
+                let inverse_alpha = 255 - u32::from(alpha);
+                let source_alpha = u32::from(alpha);
+                let offset = x * 3;
+                row[offset] = ((u32::from(red) * source_alpha
+                    + u32::from(matte) * inverse_alpha
+                    + 127)
+                    / 255) as u8;
+                row[offset + 1] =
+                    ((u32::from(green) * source_alpha + u32::from(matte) * inverse_alpha + 127)
+                        / 255) as u8;
+                row[offset + 2] =
+                    ((u32::from(blue) * source_alpha + u32::from(matte) * inverse_alpha + 127)
+                        / 255) as u8;
+            }
+            stream.write_all(&row).map_err(|error| {
+                DeployError::Capture(format!("could not encode checkerboard PNG: {error}"))
+            })?;
+        }
+        stream.finish().map_err(|error| {
+            DeployError::Capture(format!("could not encode checkerboard PNG: {error}"))
+        })?;
+    }
+    writer.finish().map_err(|error| {
+        DeployError::Capture(format!("could not encode checkerboard PNG: {error}"))
+    })?;
+    if png_bytes.len() > MAX_CAPTURE_BYTES {
+        return Err(DeployError::Capture(
+            "the checkerboard PNG exceeded the size limit".into(),
+        ));
+    }
+    Ok(png_bytes)
 }
 
 fn capture_file_stem(

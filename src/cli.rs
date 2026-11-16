@@ -21,7 +21,7 @@ const DEPLOY_REFRESH_PENDING: &str = "Pending owner approval";
 #[command(
     name = "midnight-ui-patcher",
     version,
-    about = "Manage the LG webOS theme and capture System UI graphics",
+    about = "Manage the LG webOS theme and capture checkerboard-backed System UI PNGs",
     after_help = "Start with `patches list` or `device inspect`. Applying rechecks the inspected plan and requires explicit safety confirmations.",
     arg_required_else_help = true,
     disable_help_subcommand = true
@@ -153,7 +153,7 @@ struct InspectArgs {
 enum DeviceCommand {
     /// Fetch current TV state and preview the selected edits without changing the TV.
     Inspect(InspectArgs),
-    /// Capture the current System UI graphics plane to the project screenshots folder.
+    /// Capture the current System UI with an offscreen checkerboard background.
     CaptureSystemUi(CaptureSystemUiArgs),
     /// Re-inspect and apply only if the reviewed plan fingerprint still matches.
     #[command(
@@ -195,7 +195,7 @@ struct RestartDisplayArgs {
 }
 #[derive(Debug, Args)]
 struct CaptureSystemUiArgs {
-    /// Tested UI area; included in the screenshot filename.
+    /// Tested UI area; included in the checkerboard screenshot filename.
     #[arg(
         long,
         value_name = "AREA",
@@ -763,11 +763,12 @@ fn capture_system_ui(
     let (_, settings) = load_settings(config_path)?;
     let path = deploy::capture_system_ui(&settings, &args.area).map_err(deploy_failure)?;
     let saved_path = path.display().to_string();
-    let text = format!("Saved GRAPHIC PNG for {} to {saved_path}\n", args.area);
+    let text = format!("Saved checkerboard PNG for {} to {saved_path}\n", args.area);
     Ok(CommandResult {
         text,
         data: json!({
-            "capture_method": "GRAPHIC",
+            "capture_method": "HAL_GAL_FRAMEBUFFER",
+            "background": "checkerboard",
             "tested_area": args.area,
             "path": saved_path,
         }),

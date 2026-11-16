@@ -626,7 +626,7 @@ impl AppView {
         self.busy = true;
         self.error = None;
         self.status = format!(
-            "Capturing the {} GRAPHIC plane over root SSH…",
+            "Capturing the {} HAL_GAL surface with an offscreen checkerboard over root SSH…",
             area.label()
         );
         cx.notify();
@@ -639,14 +639,15 @@ impl AppView {
                 match result {
                     Ok(path) => {
                         this.status = format!(
-                            "Saved GRAPHIC PNG for {} to {}.",
+                            "Saved checkerboard PNG for {} to {}.",
                             area.label(),
                             path.display()
                         );
                     }
                     Err(error) => {
                         this.status =
-                            "System UI capture failed; no local screenshot was kept.".into();
+                            "Checkerboard System UI capture failed; no local screenshot was kept."
+                                .into();
                         this.error = Some(error.to_string());
                     }
                 }
@@ -814,7 +815,7 @@ impl Render for AppView {
             .child(
                 div().flex().flex_col().gap_2().p_3().bg(rgb(0x22252b)).rounded_md()
                     .child(div().text_lg().font_weight(gpui::FontWeight::BOLD).child("System UI capture"))
-                    .child(div().text_sm().text_color(rgb(0xb7bbc2)).child("Open the overlay on the TV, select its test area, then capture. The TV supplies model and firmware metadata; captures use only the GRAPHIC PNG plane, never source video. PNGs stay in the project-root screenshots/ folder."))
+                    .child(div().text_sm().text_color(rgb(0xb7bbc2)).child("Open the overlay on the TV, select its area, then capture. Transparent pixels show a checkerboard in the saved PNG only; the TV display is not changed. Captures stay in the project-root screenshots/ folder."))
                     .child(
                         div().flex().flex_wrap().gap_2()
                             .children(PatchArea::ALL.into_iter().map(|area| {

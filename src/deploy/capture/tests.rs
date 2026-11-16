@@ -125,9 +125,95 @@ fn screenshot_reservation_never_overwrites_and_keeps_files_private() {
     }
 }
 
+#[test]
+fn checkerboard_png_composites_transparency_over_alternating_tiles() {
+    let width = 49_u32;
+    let mut bgra = vec![0; width as usize * 4];
+    bgra[4..8].copy_from_slice(&[20, 10, 200, 255]);
+    bgra[8..12].copy_from_slice(&[0, 0, 255, 128]);
+    let surface = CaptureSurfaceMetadata {
+        width,
+        height: 1,
+        pitch: bgra.len(),
+        bpp: 32,
+        pixel_format: HALGAL_PIXEL_FORMAT_BGRA32,
+        length: bgra.len(),
+    };
+
+    let png = checkerboard_png(&bgra, &surface).unwrap();
+    let mut reader = png::Decoder::new(std::io::Cursor::new(png))
+        .read_info()
+        .unwrap();
+    let mut decoded = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut decoded).unwrap();
+    decoded.truncate(info.buffer_size());
+
+    assert_eq!(info.color_type, png::ColorType::Rgb);
+    assert_eq!(&decoded[0..3], &[56, 56, 56]);
+    assert_eq!(&decoded[3..6], &[200, 10, 20]);
+    assert_eq!(&decoded[6..9], &[156, 28, 28]);
+    assert_eq!(&decoded[48 * 3..49 * 3], &[176, 176, 176]);
+}
+
+#[test]
+fn checkerboard_png_rejects_unsupported_or_incomplete_surfaces() {
+    let surface = CaptureSurfaceMetadata {
+        width: 1,
+        height: 1,
+        pitch: 4,
+        bpp: 32,
+        pixel_format: 1,
+        length: 4,
+    };
+    let error = checkerboard_png(&[0, 0, 0, 255], &surface)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("unsupported HAL_GAL surface format"),
+        "{error}"
+    );
+
+    let surface = CaptureSurfaceMetadata {
+        pixel_format: HALGAL_PIXEL_FORMAT_BGRA32,
+        length: 8,
+        ..surface
+    };
+    let error = checkerboard_png(&[0, 0, 0, 255], &surface)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("incomplete or oversized HAL_GAL surface"),
+        "{error}"
+    );
+}
+
+#[test]
+fn halgal_surface_metadata_requires_the_complete_layout() {
+    assert_eq!(
+        capture_surface_metadata_from_stderr(
+            b"noise\nCAPTURE_SURFACE_METADATA={\"width\":1920,\"height\":1080,\"pitch\":7680,\"bpp\":32,\"pixelFormat\":0,\"length\":8294400}\n"
+        )
+        .unwrap(),
+        CaptureSurfaceMetadata {
+            width: 1920,
+            height: 1080,
+            pitch: 7680,
+            bpp: 32,
+            pixel_format: 0,
+            length: 8294400,
+        }
+    );
+    assert!(
+        capture_surface_metadata_from_stderr(
+            b"CAPTURE_SURFACE_METADATA={\"width\":1920,\"height\":1080,\"pitch\":7680,\"bpp\":32,\"pixelFormat\":0}\n"
+        )
+        .is_err()
+    );
+}
+
 #[cfg(unix)]
 #[test]
-fn graphic_capture_rejects_nested_success_from_failed_service_and_cleans_partial_file() {
+fn halgal_capture_does_not_return_partial_surface_on_failure() {
     use std::os::unix::fs::PermissionsExt;
 
     let test_directory = TestDirectory::new("capture-response-test");
@@ -143,13 +229,6 @@ case "${1:-}" in
     -)
         printf '%s\n' '{"modelName":"Test TV","firmwareVersion":"1"}' > "$2"
         ;;
-    -e)
-        if [ -n "${3:-}" ]; then
-            printf 'partial capture' > "$3"
-            printf '%s\n' '{"returnValue":false,"details":{"returnValue":true}}'
-            exit 1
-        fi
-        ;;
     *)
         exit 2
         ;;
@@ -158,6 +237,19 @@ esac
     )
     .unwrap();
     fs::set_permissions(&node, fs::Permissions::from_mode(0o700)).unwrap();
+
+    let python = bin.join("python3");
+    fs::write(
+        &python,
+        r#"#!/bin/sh
+set -eu
+printf 'partial surface' > "$2"
+printf '%s\n' 'HAL_GAL_CaptureFrameBuffer failed' >&2
+exit 1
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&python, fs::Permissions::from_mode(0o700)).unwrap();
 
     let mktemp = bin.join("mktemp");
     fs::write(
@@ -177,7 +269,7 @@ esac
     let mut child = Command::new("/bin/sh")
         .arg("-s")
         .arg("--")
-        .arg(MAX_GRAPHIC_CAPTURE_BYTES.to_string())
+        .arg(MAX_CAPTURE_BYTES.to_string())
         .current_dir(test_directory.path())
         .env("PATH", path)
         .env("CAPTURE_TEST_DIR", &capture_directory)
@@ -190,17 +282,17 @@ esac
         .stdin
         .take()
         .unwrap()
-        .write_all(GRAPHIC_CAPTURE_SCRIPT.as_bytes())
+        .write_all(HALGAL_CHECKERBOARD_CAPTURE_SCRIPT.as_bytes())
         .unwrap();
     let output = child.wait_with_output().unwrap();
 
     assert_eq!(output.status.code(), Some(1));
     assert!(
         output.stdout.is_empty(),
-        "partial capture must not be returned"
+        "partial surface must not be returned"
     );
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("Capture service request failed"),
+        String::from_utf8_lossy(&output.stderr).contains("HAL_GAL_CaptureFrameBuffer failed"),
         "unexpected capture error: {}",
         String::from_utf8_lossy(&output.stderr)
     );

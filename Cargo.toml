@@ -19,6 +19,7 @@ toml = "0.8"
 
 dirs = "6"
 flate2 = "1"
+png = "0.17"
 tar = "0.4"
 similar = "2"
 [dev-dependencies]
