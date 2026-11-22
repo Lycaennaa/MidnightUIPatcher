@@ -155,6 +155,11 @@ enum DeviceCommand {
     Inspect(InspectArgs),
     /// Capture the current System UI with an offscreen checkerboard background.
     CaptureSystemUi(CaptureSystemUiArgs),
+    /// Automatically select a disconnected HDMI input, capture its No Signal UI, then restore the active input.
+    #[command(
+        after_help = "Requires --confirm-owner-approval. Queries EIM first, then selects the first inactive HDMI input with no cable and no signal. The active input must be HDMI 1–4 so it can be restored."
+    )]
+    CaptureNoSignal(CaptureNoSignalArgs),
     /// Re-inspect and apply only if the reviewed plan fingerprint still matches.
     #[command(
         after_help = "Run `device inspect` first. Pass its `plan_fingerprint` here. This command fetches the QML again and aborts if the fingerprint changed. Root recovery must be confirmed; unverified firmware needs a separate acknowledgement."
@@ -202,6 +207,13 @@ struct CaptureSystemUiArgs {
         help = "quick-settings, input-picker, input-banner, or no-signal"
     )]
     area: String,
+}
+
+#[derive(Debug, Args)]
+struct CaptureNoSignalArgs {
+    /// Approve temporarily changing the TV input and capturing its No Signal UI.
+    #[arg(long)]
+    confirm_owner_approval: bool,
 }
 
 #[derive(Debug, Args)]
@@ -751,6 +763,7 @@ fn run_device(
     match command {
         DeviceCommand::Inspect(selection) => inspect(selection, config_path),
         DeviceCommand::CaptureSystemUi(args) => capture_system_ui(args, config_path),
+        DeviceCommand::CaptureNoSignal(args) => capture_no_signal(args, config_path),
         DeviceCommand::Apply(args) => apply(args, config_path),
         DeviceCommand::RestartDisplay(args) => restart_display(args, config_path),
     }
@@ -770,6 +783,35 @@ fn capture_system_ui(
             "capture_method": "HAL_GAL_FRAMEBUFFER",
             "background": "checkerboard",
             "tested_area": args.area,
+            "path": saved_path,
+        }),
+    })
+}
+
+fn capture_no_signal(
+    args: CaptureNoSignalArgs,
+    config_path: Option<&Path>,
+) -> Result<CommandResult, CommandFailure> {
+    if !args.confirm_owner_approval {
+        return Err(CommandFailure::confirmation(
+            "Switching TV input can interrupt the display. Re-run with `--confirm-owner-approval` only after approving this capture.",
+        ));
+    }
+    let (_, settings) = load_settings(config_path)?;
+    let (path, input) = deploy::capture_no_signal(&settings, args.confirm_owner_approval)
+        .map_err(deploy_failure)?;
+    let saved_path = path.display().to_string();
+    Ok(CommandResult {
+        text: format!(
+            "Saved checkerboard PNG for no-signal on {} to {saved_path}; the previous HDMI input was restored and verified.\n",
+            input.as_str()
+        ),
+        data: json!({
+            "capture_method": "HAL_GAL_FRAMEBUFFER",
+            "background": "checkerboard",
+            "tested_area": "no-signal",
+            "input": input.as_str(),
+            "previous_input_restored": true,
             "path": saved_path,
         }),
     })
@@ -1582,6 +1624,14 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(refresh_error.code, "confirmation_required");
+        let capture_error = capture_no_signal(
+            CaptureNoSignalArgs {
+                confirm_owner_approval: false,
+            },
+            Some(&config_path),
+        )
+        .unwrap_err();
+        assert_eq!(capture_error.code, "confirmation_required");
         assert!(!config_path.exists());
     }
 
@@ -1629,6 +1679,32 @@ mod tests {
         assert_eq!(args.area, "input-picker");
         assert!(
             Cli::try_parse_from(["midnight-ui-patcher", "device", "capture-system-ui"]).is_err()
+        );
+    }
+
+    #[test]
+    fn cli_parses_no_signal_capture_without_a_requested_input() {
+        let cli = Cli::try_parse_from([
+            "midnight-ui-patcher",
+            "device",
+            "capture-no-signal",
+            "--confirm-owner-approval",
+        ])
+        .unwrap();
+        let AppCommand::Device(DeviceCommand::CaptureNoSignal(args)) = cli.command else {
+            panic!("No Signal capture arguments should parse");
+        };
+        assert!(args.confirm_owner_approval);
+        assert!(
+            Cli::try_parse_from([
+                "midnight-ui-patcher",
+                "device",
+                "capture-no-signal",
+                "--input",
+                "hdmi1",
+                "--confirm-owner-approval",
+            ])
+            .is_err()
         );
     }
 }

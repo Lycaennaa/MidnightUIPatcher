@@ -16,7 +16,7 @@ use crate::patcher::{self, PatchError};
 use crate::patches::{PATCH_OPTION_SPECS, PATCHES, PatchOptions, TARGETS};
 
 mod capture;
-pub use capture::capture_system_ui;
+pub use capture::{HdmiInput, capture_no_signal, capture_system_ui};
 
 const ASKPASS_SCRIPT: &str = include_str!("../support/ssh-askpass.sh");
 const TESTED_FIRMWARE_LABEL: Option<&str> = None;
@@ -359,6 +359,10 @@ pub enum DeployError {
     },
     #[error("system UI capture failed: {0}")]
     Capture(String),
+    #[error("TV input switch failed: {0}")]
+    InputSwitch(String),
+    #[error("current owner approval is required before switching inputs for a No Signal capture")]
+    NoSignalCaptureNotConfirmed,
     #[error("TV reported an unsafe state: {0}")]
     UnsafeRemoteState(String),
     #[error("source archive is invalid: {0}")]

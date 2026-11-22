@@ -1,12 +1,14 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
 use crate::config::{self, UserConfig};
 use crate::patches::PatchArea;
 
 use super::{DeployError, ssh_input};
+mod no_signal;
+pub use no_signal::{HdmiInput, capture_no_signal};
 
 const MAX_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CAPTURE_NAME_COMPONENT_BYTES: usize = 48;
@@ -21,17 +23,11 @@ const HALGAL_PIXEL_FORMAT_BGRA32: u16 = 0;
 const HALGAL_CHECKERBOARD_CAPTURE_SCRIPT: &str =
     include_str!("capture/halgal-checkerboard-capture.sh");
 
-pub fn capture_system_ui(config: &UserConfig, area_id: &str) -> Result<PathBuf, DeployError> {
-    let area = capture_area_by_id(area_id)?;
-    config::validate(config)?;
-    let timestamp = capture_timestamp()?;
-    let remote_command = format!("sh -s -- {MAX_CAPTURE_BYTES}");
-    let output = ssh_input(
-        config,
-        &remote_command,
-        HALGAL_CHECKERBOARD_CAPTURE_SCRIPT.as_bytes(),
-        "checkerboard System UI capture",
-    )?;
+fn write_capture_output(
+    output: Output,
+    timestamp: &str,
+    area: PatchArea,
+) -> Result<PathBuf, DeployError> {
     if output.stdout.is_empty() {
         return Err(DeployError::Capture(
             "the TV returned an empty HAL_GAL capture".into(),
@@ -45,7 +41,7 @@ pub fn capture_system_ui(config: &UserConfig, area_id: &str) -> Result<PathBuf, 
     let (model, firmware) = capture_metadata_from_stderr(&output.stderr)?;
     let surface = capture_surface_metadata_from_stderr(&output.stderr)?;
     let png = checkerboard_png(&output.stdout, &surface)?;
-    let filename_stem = capture_file_stem(&model, &firmware, &timestamp, area)?;
+    let filename_stem = capture_file_stem(&model, &firmware, timestamp, area)?;
     let screenshot_directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("screenshots");
     fs::create_dir_all(&screenshot_directory).map_err(|error| {
         DeployError::Capture(format!(
@@ -61,6 +57,19 @@ pub fn capture_system_ui(config: &UserConfig, area_id: &str) -> Result<PathBuf, 
         )));
     }
     Ok(path)
+}
+pub fn capture_system_ui(config: &UserConfig, area_id: &str) -> Result<PathBuf, DeployError> {
+    let area = capture_area_by_id(area_id)?;
+    config::validate(config)?;
+    let timestamp = capture_timestamp()?;
+    let remote_command = format!("sh -s -- {MAX_CAPTURE_BYTES}");
+    let output = ssh_input(
+        config,
+        &remote_command,
+        HALGAL_CHECKERBOARD_CAPTURE_SCRIPT.as_bytes(),
+        "checkerboard System UI capture",
+    )?;
+    write_capture_output(output, &timestamp, area)
 }
 
 fn capture_area_by_id(area_id: &str) -> Result<PatchArea, DeployError> {

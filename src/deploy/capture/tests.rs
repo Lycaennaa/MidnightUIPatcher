@@ -301,3 +301,241 @@ exit 1
         "remote temporary files must be cleaned"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn no_signal_remote_capture_restores_after_success_and_failure_and_checks_hdmi4_status() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let test_directory = TestDirectory::new("no-signal-restore-test");
+    let bin = test_directory.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let state_file = test_directory.path().join("active-input");
+    fs::write(&state_file, "hdmi2").unwrap();
+    let events_file = test_directory.path().join("input-events");
+    let write_executable = |name: &str, source: &str| {
+        let path = bin.join(name);
+        fs::write(&path, source).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        path
+    };
+
+    write_executable(
+        "script",
+        r#"#!/bin/sh
+set -eu
+case "$3" in
+    *getAllInputStatus*)
+        case "$3" in
+            *"luna-send -w 5000 -n 1"*) ;;
+            *) exit 4 ;;
+        esac
+        active=$(cat "$NO_SIGNAL_TEST_STATE")
+        if [ "$NO_SIGNAL_TEST_LUNA_TIMEOUT" = status ] && [ "$active" = hdmi4 ]; then
+            printf '%s\n' status-timeout >> "$NO_SIGNAL_TEST_EVENTS"
+            exit 124
+        fi
+        if [ "$active" = hdmi4 ]; then
+            if [ "$NO_SIGNAL_TEST_BAD_HDMI4_SIGNAL" = 1 ]; then
+                printf '%s\n' '{"devices[0].appId":"com.webos.app.hdmi3","devices[0].activate":false,"devices[0].hdmiPlugIn":false,"devices[0].hdmiSignalExist":false,"devices[1].appId":"com.webos.app.hdmi2","devices[1].activate":false,"devices[1].hdmiPlugIn":true,"devices[1].hdmiSignalExist":true,"devices[2].appId":"com.webos.app.hdmi4","devices[2].activate":true,"devices[2].hdmiPlugIn":false,"devices[2]XhdmiSignalExist":false,"devices[3].appId":"com.webos.app.hdmi1","devices[3].activate":false,"devices[3].hdmiPlugIn":false,"devices[3].hdmiSignalExist":false}'
+            else
+                printf '%s\n' '{"devices[0].appId":"com.webos.app.hdmi3","devices[0].activate":false,"devices[0].hdmiPlugIn":false,"devices[0].hdmiSignalExist":false,"devices[1].appId":"com.webos.app.hdmi2","devices[1].activate":false,"devices[1].hdmiPlugIn":true,"devices[1].hdmiSignalExist":true,"devices[2].appId":"com.webos.app.hdmi4","devices[2].activate":true,"devices[2].hdmiPlugIn":false,"devices[2].hdmiSignalExist":false,"devices[3].appId":"com.webos.app.hdmi1","devices[3].activate":false,"devices[3].hdmiPlugIn":false,"devices[3].hdmiSignalExist":false}'
+            fi
+        else
+            printf '%s\n' '{"devices[0].appId":"com.webos.app.hdmi3","devices[0].activate":false,"devices[0].hdmiPlugIn":false,"devices[0].hdmiSignalExist":false,"devices[1].appId":"com.webos.app.hdmi2","devices[1].activate":true,"devices[1].hdmiPlugIn":true,"devices[1].hdmiSignalExist":true,"devices[2].appId":"com.webos.app.hdmi4","devices[2].activate":false,"devices[2].hdmiPlugIn":false,"devices[2].hdmiSignalExist":false,"devices[3].appId":"com.webos.app.hdmi1","devices[3].activate":false,"devices[3].hdmiPlugIn":false,"devices[3].hdmiSignalExist":false}'
+        fi
+        ;;
+    *applicationManager/launch*)
+        case "$3" in
+            *"luna-send -w 5000 -n 1"*) ;;
+            *) exit 5 ;;
+        esac
+        case "$3" in
+            *com.webos.app.hdmi4*)
+                if [ "$NO_SIGNAL_TEST_LUNA_TIMEOUT" = launch ]; then
+                    printf '%s\n' hdmi4-timeout >> "$NO_SIGNAL_TEST_EVENTS"
+                    exit 124
+                fi
+                if [ "$NO_SIGNAL_TEST_NO_SWITCH" != 1 ]; then
+                    printf '%s' hdmi4 > "$NO_SIGNAL_TEST_STATE"
+                fi
+                printf '%s\n' hdmi4 >> "$NO_SIGNAL_TEST_EVENTS"
+                ;;
+            *com.webos.app.hdmi2*)
+                if [ "$NO_SIGNAL_TEST_NO_RESTORE" != 1 ]; then
+                    printf '%s' hdmi2 > "$NO_SIGNAL_TEST_STATE"
+                fi
+                printf '%s\n' hdmi2 >> "$NO_SIGNAL_TEST_EVENTS"
+                ;;
+            *) exit 2 ;;
+        esac
+        printf '%s\n' '{"returnValue": true}'
+        ;;
+    *) exit 3 ;;
+esac
+"#,
+    );
+    write_executable(
+        "node",
+        "#!/bin/sh\nset -eu\nprintf '%s\\n' '{\"modelName\":\"Test TV\",\"firmwareVersion\":\"1\"}' > \"$2\"\n",
+    );
+    let capture_calls_file = test_directory.path().join("capture-calls");
+    write_executable(
+        "python3",
+        r#"#!/bin/sh
+set -eu
+printf '%s\n' called >> "$NO_SIGNAL_TEST_CAPTURE_CALLS"
+if [ "$NO_SIGNAL_TEST_CAPTURE_FAIL" = 1 ]; then
+    printf partial > "$2"
+    printf '%s\n' 'HAL_GAL_CaptureFrameBuffer failed' >&2
+    exit 1
+fi
+head -c 4 /dev/zero > "$2"
+printf '%s\n' 'CAPTURE_SURFACE_METADATA={"width":1,"height":1,"pitch":4,"bpp":32,"pixelFormat":0,"length":4}' >&2
+"#,
+    );
+    write_executable(
+        "mktemp",
+        "#!/bin/sh\nset -eu\nmkdir -p \"$CAPTURE_TEST_DIR\"\nprintf '%s\\n' \"$CAPTURE_TEST_DIR\"\n",
+    );
+    write_executable("sleep", "#!/bin/sh\nexit 0\n");
+
+    let mut path_entries = vec![bin];
+    path_entries.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    let path = std::env::join_paths(path_entries).unwrap();
+    let capture_directory = test_directory.path().join("tv-capture");
+    let run_capture = |no_switch: bool,
+                       fail_capture: bool,
+                       bad_hdmi4_signal: bool,
+                       luna_timeout: &str,
+                       no_restore: bool| {
+        let mut child = Command::new("/bin/sh")
+            .arg("-s")
+            .arg("--")
+            .arg("hdmi4")
+            .arg("hdmi2")
+            .arg(MAX_CAPTURE_BYTES.to_string())
+            .current_dir(test_directory.path())
+            .env("PATH", &path)
+            .env("NO_SIGNAL_TEST_STATE", &state_file)
+            .env("CAPTURE_TEST_DIR", &capture_directory)
+            .env("NO_SIGNAL_TEST_EVENTS", &events_file)
+            .env("NO_SIGNAL_TEST_CAPTURE_CALLS", &capture_calls_file)
+            .env(
+                "NO_SIGNAL_TEST_NO_SWITCH",
+                if no_switch { "1" } else { "0" },
+            )
+            .env(
+                "NO_SIGNAL_TEST_CAPTURE_FAIL",
+                if fail_capture { "1" } else { "0" },
+            )
+            .env(
+                "NO_SIGNAL_TEST_BAD_HDMI4_SIGNAL",
+                if bad_hdmi4_signal { "1" } else { "0" },
+            )
+            .env("NO_SIGNAL_TEST_LUNA_TIMEOUT", luna_timeout)
+            .env(
+                "NO_SIGNAL_TEST_NO_RESTORE",
+                if no_restore { "1" } else { "0" },
+            )
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(super::no_signal::NO_SIGNAL_CAPTURE_SCRIPT.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+
+    let output = run_capture(false, true, false, "none", false);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(fs::read_to_string(&events_file).unwrap(), "hdmi4\nhdmi2\n");
+    assert_eq!(fs::read_to_string(&capture_calls_file).unwrap(), "called\n");
+    assert_eq!(fs::read_to_string(&state_file).unwrap(), "hdmi2");
+
+    fs::write(&state_file, "hdmi2").unwrap();
+    fs::remove_file(&events_file).unwrap();
+    fs::remove_file(&capture_calls_file).unwrap();
+    let output = run_capture(true, false, false, "none", false);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("is not active"),
+        "expected inactive input refusal, got: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read_to_string(&events_file).unwrap(), "hdmi4\nhdmi2\n");
+    assert!(
+        !capture_calls_file.exists(),
+        "must not capture the wrong input"
+    );
+    assert_eq!(fs::read_to_string(&state_file).unwrap(), "hdmi2");
+
+    fs::write(&state_file, "hdmi2").unwrap();
+    fs::remove_file(&events_file).unwrap();
+    let output = run_capture(false, false, false, "none", false);
+    assert!(output.status.success());
+    assert_eq!(output.stdout.len(), 4);
+    assert_eq!(fs::read_to_string(&events_file).unwrap(), "hdmi4\nhdmi2\n");
+    assert_eq!(fs::read_to_string(&capture_calls_file).unwrap(), "called\n");
+    assert_eq!(fs::read_to_string(&state_file).unwrap(), "hdmi2");
+
+    fs::write(&state_file, "hdmi2").unwrap();
+    fs::remove_file(&events_file).unwrap();
+    fs::remove_file(&capture_calls_file).unwrap();
+    let output = run_capture(false, false, true, "none", false);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("connected or has signal"),
+        "expected missing HDMI 4 property refusal, got: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read_to_string(&events_file).unwrap(), "hdmi4\nhdmi2\n");
+    assert!(
+        !capture_calls_file.exists(),
+        "must not accept a mismatched EIM key"
+    );
+    assert_eq!(fs::read_to_string(&state_file).unwrap(), "hdmi2");
+    for (timeout, expected_events) in [
+        ("launch", "hdmi4-timeout\nhdmi2\n"),
+        ("status", "hdmi4\nstatus-timeout\nhdmi2\n"),
+    ] {
+        fs::write(&state_file, "hdmi2").unwrap();
+        fs::remove_file(&events_file).unwrap();
+        if capture_calls_file.exists() {
+            fs::remove_file(&capture_calls_file).unwrap();
+        }
+        let output = run_capture(false, false, false, timeout, false);
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(fs::read_to_string(&events_file).unwrap(), expected_events);
+        assert!(
+            !capture_calls_file.exists(),
+            "must not capture after a timed-out Luna request"
+        );
+        assert_eq!(fs::read_to_string(&state_file).unwrap(), "hdmi2");
+    }
+    for fail_capture in [false, true] {
+        fs::write(&state_file, "hdmi2").unwrap();
+        fs::remove_file(&events_file).unwrap();
+        if capture_calls_file.exists() {
+            fs::remove_file(&capture_calls_file).unwrap();
+        }
+        let output = run_capture(false, fail_capture, false, "none", true);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("Could not verify restoration of the previously active HDMI input"),
+            "the launch reply must not substitute for restoration verification: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fs::read_to_string(&events_file).unwrap(), "hdmi4\nhdmi2\n");
+        assert_eq!(fs::read_to_string(&state_file).unwrap(), "hdmi4");
+        assert_eq!(fs::read_to_string(&capture_calls_file).unwrap(), "called\n");
+    }
+}

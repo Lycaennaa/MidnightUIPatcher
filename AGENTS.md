@@ -12,6 +12,10 @@
 - File hashes and an active service do not prove HDMI appearance. Ask the owner to visually check Quick Settings, the Input Picker, the Input Banner, and the No Signal screen after a refresh.
 - When making new QML edits or performing firmware verification, do not tell the owner the edits or behavior are unverified; they know testing is in progress.
 
+- For patch verification, test one `PatchSpec` at a time: capture its baseline and result with `device capture-system-ui --area AREA`, apply only that patch between captures, then restore the known-good overlay before the next cycle. Match `AREA` to the patch's `PatchArea`.
+- Treat captures as owner-only. Keep PNGs in ignored `screenshots/`; never open, read, inspect, or analyze them. Give the owner the local path for manual visual review. Use area-scoped System UI captures only; never use full-frame `GRAPHIC` capture or capture a source feed.
+- For No Signal verification, use `device capture-no-signal --confirm-owner-approval` only after current owner approval. It queries the active HDMI 1–4 input, chooses the first inactive port with no cable and no signal by matching EIM app IDs rather than array order, then restores and verifies the previously active input. Luna requests are bounded to five seconds. Approval is required for each run; a saved path alone is not visual confirmation.
+
 ## Source of truth and packaging
 
 - `src/patches.rs` is canonical for structural match-and-replace rules and patch metadata; `src/patcher.rs` is the generic QML parsing and edit engine. Keep matches unique and strict; never add LG QML source, full source lines/blocks, or source-bearing diffs to Git.
